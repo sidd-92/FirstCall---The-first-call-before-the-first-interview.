@@ -18,7 +18,7 @@ import re
 
 from caspian_sdk import CommClient, Message
 
-from src import db, storage
+from src import db, status, storage
 from src.agents import agent2, faq, screening
 from src.agents.config import load_job_agent_config
 from src.logging_config import get_logger
@@ -156,18 +156,27 @@ def register(client: CommClient) -> None:
     credentials aren't configured yet, shouldn't stop the mcp-server process
     from starting -- just that channel won't receive traffic until fixed.
     """
+    status.set_channel("email", "connecting")
     try:
         client.connect_email()
     except Exception:
         log.warning("email_connect_failed", exc_info=True)
+        status.set_channel("email", "disconnected")
+    else:
+        status.set_channel("email", "connected")
 
     discord_bot_token = os.environ.get("DISCORD_BOT_TOKEN")
     if discord_bot_token:
+        status.set_channel("discord", "connecting")
         try:
             client.connect_discord(bot_token=discord_bot_token)
         except Exception:
             log.warning("discord_connect_failed", exc_info=True)
+            status.set_channel("discord", "disconnected")
+        else:
+            status.set_channel("discord", "connected")
     else:
         log.warning("discord_not_configured", detail="DISCORD_BOT_TOKEN is not set")
+        status.set_channel("discord", "disconnected")
 
     client.on_message(handle_message)

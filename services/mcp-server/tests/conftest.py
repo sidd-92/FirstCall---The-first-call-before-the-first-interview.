@@ -6,9 +6,17 @@ DATABASE_URL.
 """
 
 
+import os
+
 import pytest
 from cryptography.fernet import Fernet
 from sqlalchemy import create_engine, text
+
+# src.server constructs a CaspianClient (-> caspian_sdk.CommClient) at import
+# time, which requires an API key to be present. Set a harmless default here
+# -- before any test module imports src.server -- so collection doesn't fail;
+# no network call is made at construction time.
+os.environ.setdefault("CASPIAN_API_KEY", "test-api-key")
 
 _SCHEMA = """
 CREATE TABLE businesses (
@@ -152,6 +160,29 @@ def seed_candidate(
                 "job_posting_id": job_posting_id,
                 "email": email,
                 "discord_user_id": discord_user_id,
+            },
+        )
+
+
+def seed_conversation(
+    db_module,
+    conversation_id: int = 1,
+    candidate_id: int = 1,
+    channel: str = "email",
+    external_conversation_id: str = "ext-conv-1",
+) -> None:
+    with db_module.engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO conversations "
+                "(id, candidate_id, channel, external_conversation_id, created_at) "
+                "VALUES (:id, :candidate_id, :channel, :external_conversation_id, datetime('now'))"
+            ),
+            {
+                "id": conversation_id,
+                "candidate_id": candidate_id,
+                "channel": channel,
+                "external_conversation_id": external_conversation_id,
             },
         )
 
