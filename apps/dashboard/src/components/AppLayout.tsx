@@ -9,7 +9,7 @@ const NAV_LINKS = [
 ]
 
 export function AppLayout() {
-  const { isAuthenticated, user, logout, loginWithRedirect } = useAuth0()
+  const { isAuthenticated, user, logout, loginWithRedirect, error } = useAuth0()
   const location = useLocation()
 
   return (
@@ -52,7 +52,14 @@ export function AppLayout() {
       </header>
 
       <main className="mx-auto max-w-4xl px-4 py-8">
-        <Outlet />
+        {error ? (
+          <div className="rounded-md border border-destructive/50 bg-destructive/10 p-4 text-destructive">
+            <p className="font-medium">Auth0 error</p>
+            <p className="text-sm">{error.message}</p>
+          </div>
+        ) : (
+          <Outlet />
+        )}
       </main>
     </div>
   )
