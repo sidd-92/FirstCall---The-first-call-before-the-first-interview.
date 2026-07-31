@@ -42,7 +42,7 @@ def _get_jwks() -> dict:
     process-lifetime cache.
     """
     url = f"https://{AUTH0_DOMAIN}/.well-known/jwks.json"
-    with urllib.request.urlopen(url) as response:  # noqa: S310 - fixed Auth0 domain from env
+    with urllib.request.urlopen(url) as response:
         return json.load(response)
 
 

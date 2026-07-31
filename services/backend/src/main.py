@@ -10,10 +10,10 @@ from fastapi.responses import JSONResponse
 
 load_dotenv()
 
-from src.db import engine  # noqa: E402
-from src.logging_config import configure_logging, get_logger  # noqa: E402
-from src.models import Base  # noqa: E402
-from src.routes import dashboard, public  # noqa: E402
+from src.db import engine
+from src.logging_config import configure_logging, get_logger
+from src.models import Base
+from src.routes import dashboard, public
 
 configure_logging()
 log = get_logger()
