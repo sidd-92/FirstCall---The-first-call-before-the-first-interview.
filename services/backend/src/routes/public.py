@@ -7,6 +7,7 @@ applicants, no internal pipeline state).
 
 import json
 import os
+import secrets
 import uuid
 from pathlib import Path
 
@@ -19,6 +20,16 @@ from src.models import Business, Candidate, JobPosting, PipelineStage, PipelineS
 from src.notifications import notify_new_application
 
 log = get_logger()
+
+# Length chosen to keep the code short enough to type into a Discord DM by
+# hand while keeping collisions rare; retried on the rare unique-constraint
+# clash rather than sized to make collisions impossible.
+DISCORD_LINK_CODE_LENGTH = 6
+
+
+def _generate_discord_link_code() -> str:
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O/1/I -- easy to read/type
+    return "".join(secrets.choice(alphabet) for _ in range(DISCORD_LINK_CODE_LENGTH))
 
 router = APIRouter(tags=["public"])
 
@@ -97,6 +108,7 @@ def apply_to_job(
         phone=phone,
         address=address,
         resume_file_path=resume_file_path,
+        discord_link_code=_generate_discord_link_code(),
     )
     db.add(candidate)
     db.flush()  # assigns candidate.id without committing yet
@@ -110,4 +122,4 @@ def apply_to_job(
     business = db.query(Business).filter(Business.id == job_posting.business_id).first()
     notify_new_application(candidate, job_posting, business)
 
-    return {"id": candidate.id}
+    return {"id": candidate.id, "discord_link_code": candidate.discord_link_code}

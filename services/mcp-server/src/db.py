@@ -27,6 +27,7 @@ from sqlalchemy import (
     create_engine,
     insert,
     select,
+    update,
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -66,6 +67,7 @@ candidates = Table(
     Column("name", String),
     Column("email", String),
     Column("discord_user_id", String),
+    Column("discord_link_code", String),
 )
 
 pipeline_stages = Table(
@@ -131,6 +133,31 @@ def find_candidate_by_discord_user_id(discord_user_id: str) -> dict | None:
     with engine.connect() as conn:
         row = conn.execute(stmt).first()
     return row._asdict() if row else None
+
+
+def find_candidate_by_discord_link_code(code: str) -> dict | None:
+    """Match an unlinked candidate by the one-time code shown on their apply
+    confirmation screen. Only matches candidates that aren't linked yet --
+    once discord_user_id is set, the code is no longer a valid lookup key."""
+    stmt = select(
+        candidates.c.id, candidates.c.business_id, candidates.c.job_posting_id, candidates.c.name
+    ).where(
+        candidates.c.discord_link_code == code,
+        candidates.c.discord_user_id.is_(None),
+    )
+    with engine.connect() as conn:
+        row = conn.execute(stmt).first()
+    return row._asdict() if row else None
+
+
+def link_candidate_discord(candidate_id: int, discord_user_id: str) -> None:
+    stmt = (
+        update(candidates)
+        .where(candidates.c.id == candidate_id)
+        .values(discord_user_id=discord_user_id)
+    )
+    with engine.begin() as conn:
+        conn.execute(stmt)
 
 
 def get_job_posting(job_posting_id: int) -> dict | None:

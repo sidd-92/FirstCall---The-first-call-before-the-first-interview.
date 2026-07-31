@@ -61,6 +61,20 @@ class JobPostingCreate(BaseModel):
     benefits: list[str] = []
 
 
+class FaqEntryPayload(BaseModel):
+    question: str
+    answer: str
+
+
+class JobPostingConfigUpdate(BaseModel):
+    """Matches src/agents/config.py's faq_json contract on the mcp-server
+    side -- Agent 1 reads this live off JobPosting.faq_json on every
+    message, so a save here takes effect immediately, no redeploy."""
+
+    faq: list[FaqEntryPayload] = []
+    screening_questions: list[str] = []
+
+
 def _write_audit(db: Session, business_id: int, actor: str, action: str, candidate_id: int) -> None:
     db.add(
         AuditLogEntry(
@@ -81,6 +95,31 @@ def _get_candidate_or_404(db: Session, candidate_id: int, business_id: int) -> C
     if candidate is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Candidate not found")
     return candidate
+
+
+def _get_job_posting_or_404(db: Session, job_posting_id: int, business_id: int) -> JobPosting:
+    job_posting = (
+        db.query(JobPosting)
+        .filter(JobPosting.id == job_posting_id, JobPosting.business_id == business_id)
+        .first()
+    )
+    if job_posting is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job posting not found")
+    return job_posting
+
+
+def _parse_agent_config(faq_json: str) -> dict:
+    """Mirrors src/agents/config.py's `load_job_agent_config` parsing on the
+    mcp-server side -- a posting missing either key just has none of that
+    content, never errors."""
+    try:
+        parsed = json.loads(faq_json or "{}")
+    except json.JSONDecodeError:
+        parsed = {}
+    return {
+        "faq": parsed.get("faq", []),
+        "screening_questions": parsed.get("screening_questions", []),
+    }
 
 
 def _set_pipeline_stage(
@@ -176,8 +215,8 @@ def create_job_posting(
     """Create a new job posting for the authenticated business.
 
     FAQ/screening-question config (src/agents/config.py's faq_json contract)
-    isn't authored through this form -- new postings start with none and can
-    have it added later.
+    isn't authored through this form -- new postings start with none; use
+    GET/PATCH /job-postings/{id} to add it afterward.
     """
     job_posting = JobPosting(
         business_id=business_id,
@@ -198,6 +237,90 @@ def create_job_posting(
     log.info("job_posting_created", job_posting_id=job_posting.id, business_id=business_id)
 
     return {"id": job_posting.id}
+
+
+@router.get("/job-postings")
+def list_job_postings(
+    business_id: int = Depends(get_current_business),
+    db: Session = Depends(get_db),
+):
+    """List job postings for the authenticated business -- distinct from the
+    public GET /jobs (unauthenticated, all businesses' active postings only).
+    Includes a FAQ/screening-question count so HR can see at a glance which
+    postings still need that config filled in."""
+    postings = (
+        db.query(JobPosting)
+        .filter(JobPosting.business_id == business_id)
+        .order_by(JobPosting.id.desc())
+        .all()
+    )
+    result = []
+    for posting in postings:
+        config = _parse_agent_config(posting.faq_json)
+        result.append(
+            {
+                "id": posting.id,
+                "title": posting.title,
+                "location": posting.location,
+                "employment_type": posting.employment_type,
+                "is_active": posting.is_active,
+                "faq_count": len(config["faq"]),
+                "screening_question_count": len(config["screening_questions"]),
+            }
+        )
+    return result
+
+
+@router.get("/job-postings/{job_posting_id}")
+def get_job_posting(
+    job_posting_id: int,
+    business_id: int = Depends(get_current_business),
+    db: Session = Depends(get_db),
+):
+    """Fetch a job posting's full detail, including its parsed FAQ and
+    screening-question config, scoped to the authenticated business."""
+    posting = _get_job_posting_or_404(db, job_posting_id, business_id)
+    config = _parse_agent_config(posting.faq_json)
+    return {
+        "id": posting.id,
+        "title": posting.title,
+        "description": posting.description,
+        "location": posting.location,
+        "employment_type": posting.employment_type,
+        "is_active": posting.is_active,
+        "faq": config["faq"],
+        "screening_questions": config["screening_questions"],
+    }
+
+
+@router.patch("/job-postings/{job_posting_id}")
+def update_job_posting_config(
+    job_posting_id: int,
+    payload: JobPostingConfigUpdate,
+    context: tuple[int, str] = Depends(get_current_actor_and_business),
+    db: Session = Depends(get_db),
+):
+    """Replace a job posting's FAQ entries and fixed screening-question
+    sequence (src/agents/config.py's faq_json contract). mcp-server's
+    Agent 1 reads this straight off the DB on every message -- a save here
+    takes effect on the candidate's very next message, no redeploy needed."""
+    business_id, actor = context
+    posting = _get_job_posting_or_404(db, job_posting_id, business_id)
+
+    faq = [entry.model_dump() for entry in payload.faq]
+    posting.faq_json = json.dumps({"faq": faq, "screening_questions": payload.screening_questions})
+    db.commit()
+
+    log.info(
+        "job_posting_config_updated",
+        job_posting_id=job_posting_id,
+        business_id=business_id,
+        actor=actor,
+        faq_count=len(faq),
+        screening_question_count=len(payload.screening_questions),
+    )
+
+    return {"faq": faq, "screening_questions": payload.screening_questions}
 
 
 @router.get("/candidates")

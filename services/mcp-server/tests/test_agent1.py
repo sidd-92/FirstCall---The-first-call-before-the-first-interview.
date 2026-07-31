@@ -44,17 +44,17 @@ class FakeClient:
 
 def make_message(**overrides) -> Message:
     defaults = {
-        'id': "msg-1",
-        'conversation_id': "ext-conv-1",
-        'connection_id': "conn-1",
-        'customer_id': "cust-1",
-        'agent_id': "agent-1",
-        'channel': "email",
-        'sender': None,
-        'subject': None,
-        'text': None,
-        'html': None,
-        '_client': FakeClient(),
+        "id": "msg-1",
+        "conversation_id": "ext-conv-1",
+        "connection_id": "conn-1",
+        "customer_id": "cust-1",
+        "agent_id": "agent-1",
+        "channel": "email",
+        "sender": None,
+        "subject": None,
+        "text": None,
+        "html": None,
+        "_client": FakeClient(),
     }
     defaults.update(overrides)
     return Message(**defaults)
@@ -109,7 +109,9 @@ def test_email_falls_back_to_llm_for_uncovered_question(db, monkeypatch):
 
 
 def test_email_missing_job_tag_gets_generic_reply(db):
-    message = make_message(channel="email", subject="Hello there", sender={"email": "a@b.com"})
+    message = make_message(
+        channel="email", subject="Hello there", sender={"email": "a@b.com"}
+    )
     agent1.handle_message(message)
 
     assert len(message._client.replies) == 1
@@ -139,7 +141,10 @@ def test_discord_holding_message_when_screening_not_assigned(db):
     seed_pipeline_stage(db, stage="applied")
 
     message = make_message(
-        channel="discord", sender={"id": "disc-1"}, text="hi", conversation_id="ext-conv-discord-1"
+        channel="discord",
+        sender={"address": "disc-1"},
+        text="hi",
+        conversation_id="ext-conv-discord-1",
     )
     agent1.handle_message(message)
 
@@ -152,7 +157,10 @@ def test_discord_asks_first_screening_question_once_assigned(db):
     seed_pipeline_stage(db, stage="screening_assigned")
 
     message = make_message(
-        channel="discord", sender={"id": "disc-1"}, text="hi", conversation_id="ext-conv-discord-1"
+        channel="discord",
+        sender={"address": "disc-1"},
+        text="hi",
+        conversation_id="ext-conv-discord-1",
     )
     agent1.handle_message(message)
 
@@ -168,11 +176,16 @@ def test_discord_asks_second_question_on_next_turn(db):
 
     conv_id = "ext-conv-discord-1"
     agent1.handle_message(
-        make_message(channel="discord", sender={"id": "disc-1"}, text="hi", conversation_id=conv_id)
+        make_message(
+            channel="discord",
+            sender={"address": "disc-1"},
+            text="hi",
+            conversation_id=conv_id,
+        )
     )
     second = make_message(
         channel="discord",
-        sender={"id": "disc-1"},
+        sender={"address": "disc-1"},
         text="I worked at a cafe for 2 years.",
         conversation_id=conv_id,
     )
@@ -198,7 +211,10 @@ def test_discord_sends_closing_message_after_last_question(db, monkeypatch):
     last_message = None
     for text in texts:
         last_message = make_message(
-            channel="discord", sender={"id": "disc-1"}, text=text, conversation_id=conv_id
+            channel="discord",
+            sender={"address": "disc-1"},
+            text=text,
+            conversation_id=conv_id,
         )
         agent1.handle_message(last_message)
 
@@ -209,11 +225,94 @@ def test_discord_sends_closing_message_after_last_question(db, monkeypatch):
 
 def test_discord_unresolved_candidate_gets_generic_reply(db):
     message = make_message(
-        channel="discord", sender={"id": "unknown-disc-user"}, text="hi", conversation_id="ext-x"
+        channel="discord",
+        sender={"address": "unknown-disc-user"},
+        text="hi",
+        conversation_id="ext-x",
     )
     agent1.handle_message(message)
 
     assert "couldn't match this" in message._client.replies[0]["text"]
+
+
+def test_discord_valid_link_code_links_candidate(db):
+    setup_job(db)
+    seed_candidate(db, discord_link_code="ABC123")
+    seed_pipeline_stage(db, stage="applied")
+
+    message = make_message(
+        channel="discord",
+        sender={"address": "disc-99"},
+        text="ABC123",
+        conversation_id="ext-conv-link-1",
+    )
+    agent1.handle_message(message)
+
+    assert "You're linked" in message._client.replies[0]["text"]
+    candidate = db.find_candidate_by_discord_user_id("disc-99")
+    assert candidate is not None
+    assert candidate["id"] == 1
+
+
+def test_discord_after_linking_next_message_resolves_normally(db):
+    setup_job(db)
+    seed_candidate(db, discord_link_code="ABC123")
+    seed_pipeline_stage(db, stage="screening_assigned")
+
+    conv_id = "ext-conv-link-2"
+    agent1.handle_message(
+        make_message(
+            channel="discord",
+            sender={"address": "disc-99"},
+            text="ABC123",
+            conversation_id=conv_id,
+        )
+    )
+    second = make_message(
+        channel="discord",
+        sender={"address": "disc-99"},
+        text="hi again",
+        conversation_id=conv_id,
+    )
+    agent1.handle_message(second)
+
+    assert second._client.replies[0]["text"] == (
+        "Can you tell me a bit about your relevant experience?"
+    )
+
+
+def test_discord_wrong_code_still_gets_generic_reply(db):
+    setup_job(db)
+    seed_candidate(db, discord_link_code="ABC123")
+
+    message = make_message(
+        channel="discord",
+        sender={"address": "disc-99"},
+        text="WRONGCODE",
+        conversation_id="ext-x",
+    )
+    agent1.handle_message(message)
+
+    assert "couldn't match this" in message._client.replies[0]["text"]
+
+
+def test_discord_link_code_already_used_cannot_relink(db):
+    setup_job(db)
+    seed_candidate(db, discord_user_id="disc-1", discord_link_code="ABC123")
+
+    # candidate is already linked to disc-1 -- a different Discord user
+    # sending the same code must not be able to steal the link.
+    message = make_message(
+        channel="discord",
+        sender={"address": "disc-2"},
+        text="ABC123",
+        conversation_id="ext-y",
+    )
+    agent1.handle_message(message)
+
+    assert "couldn't match this" in message._client.replies[0]["text"]
+    candidate = db.find_candidate_by_discord_user_id("disc-2")
+    assert candidate is None
 
 
 def test_unhandled_channel_does_not_raise(db):

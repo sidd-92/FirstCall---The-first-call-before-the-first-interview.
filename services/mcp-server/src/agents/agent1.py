@@ -28,7 +28,9 @@ log = get_logger()
 JOB_TAG_RE = re.compile(r"\[JOB-(\d+)\]")
 
 
-def _get_or_create_conversation(candidate_id: int, channel: str, external_conversation_id: str) -> int:
+def _get_or_create_conversation(
+    candidate_id: int, channel: str, external_conversation_id: str
+) -> int:
     existing = db.find_conversation_by_external_id(external_conversation_id)
     if existing is not None:
         return existing["id"]
@@ -50,7 +52,11 @@ def _handle_email(message: Message) -> None:
     job_posting_id = int(match.group(1))
 
     sender_email = (message.sender or {}).get("email")
-    candidate = db.find_candidate_by_email(sender_email, job_posting_id) if sender_email else None
+    candidate = (
+        db.find_candidate_by_email(sender_email, job_posting_id)
+        if sender_email
+        else None
+    )
     if candidate is None:
         conv_log.warning("email_candidate_not_found", job_posting_id=job_posting_id)
         message.reply(
@@ -66,7 +72,9 @@ def _handle_email(message: Message) -> None:
         message.reply(text="Sorry, we couldn't find that role anymore.")
         return
 
-    conversation_id = _get_or_create_conversation(candidate_id, "email", message.conversation_id)
+    conversation_id = _get_or_create_conversation(
+        candidate_id, "email", message.conversation_id
+    )
     storage.save_message(conversation_id, "inbound", message.text or "")
 
     answer, used_llm_fallback = faq.answer_question(config, message.text)
@@ -83,15 +91,39 @@ def _resolve_discord_candidate(message: Message) -> tuple[int, int] | None:
     if existing is not None:
         return existing["candidate_id"], existing["id"]
 
-    discord_user_id = (message.sender or {}).get("id")
+    # caspian_sdk's Discord `sender` carries Caspian's own stable per-user
+    # identifier under "address" (e.g. "powerful_flamingo_41530") -- there is
+    # no "id" key on this payload.
+    discord_user_id = (message.sender or {}).get("address")
     if not discord_user_id:
         return None
     candidate = db.find_candidate_by_discord_user_id(discord_user_id)
     if candidate is None:
         return None
 
-    conversation_id = db.create_conversation(candidate["id"], "discord", message.conversation_id)
+    conversation_id = db.create_conversation(
+        candidate["id"], "discord", message.conversation_id
+    )
     return candidate["id"], conversation_id
+
+
+def _try_link_discord_candidate(message: Message) -> int | None:
+    """If this message's text is an unused Discord link code (shown on a
+    candidate's apply confirmation screen), link the sending Discord identity
+    to that candidate. Returns the candidate_id on a successful link, else
+    None -- callers fall back to the generic unrecognized-sender reply."""
+    # caspian_sdk's Discord `sender` carries Caspian's own stable per-user
+    # identifier under "address" (e.g. "powerful_flamingo_41530") -- there is
+    # no "id" key on this payload.
+    discord_user_id = (message.sender or {}).get("address")
+    if not discord_user_id or not message.text:
+        return None
+    code = message.text.strip().upper()
+    candidate = db.find_candidate_by_discord_link_code(code)
+    if candidate is None:
+        return None
+    db.link_candidate_discord(candidate["id"], discord_user_id)
+    return candidate["id"]
 
 
 def _handle_discord(message: Message) -> None:
@@ -100,10 +132,14 @@ def _handle_discord(message: Message) -> None:
 
     resolved = _resolve_discord_candidate(message)
     if resolved is None:
+        linked_candidate_id = _try_link_discord_candidate(message)
+        if linked_candidate_id is not None:
+            conv_log.info("discord_candidate_linked", candidate_id=linked_candidate_id)
+            message.reply(text=screening.LINKED_MESSAGE)
+            return
         # No candidate/conversation to attach this message to -- can't persist
         # it (conversations.candidate_id is a required FK), so we only log +
-        # reply. See module docstring: linking a Discord identity to a
-        # candidate (Candidate.discord_user_id) happens elsewhere.
+        # reply.
         conv_log.warning("discord_candidate_unresolved")
         message.reply(text=screening.UNRECOGNIZED_MESSAGE)
         return
@@ -116,14 +152,18 @@ def _handle_discord(message: Message) -> None:
     if stage != "screening_assigned":
         conv_log.info("discord_holding_reply", stage=stage)
         message.reply(text=screening.HOLDING_MESSAGE)
-        storage.save_message(conversation_id, "outbound", screening.HOLDING_MESSAGE, kind="holding")
+        storage.save_message(
+            conversation_id, "outbound", screening.HOLDING_MESSAGE, kind="holding"
+        )
         return
 
     candidate = db.get_candidate(candidate_id)
     config = load_job_agent_config(candidate["job_posting_id"]) if candidate else None
     questions = config.screening_questions if config else []
 
-    question_index = db.count_messages_by_kind(conversation_id, screening.SCREENING_QUESTION_KIND)
+    question_index = db.count_messages_by_kind(
+        conversation_id, screening.SCREENING_QUESTION_KIND
+    )
     if question_index > 0:
         conv_log.info("screening_answer_received", question_index=question_index - 1)
 

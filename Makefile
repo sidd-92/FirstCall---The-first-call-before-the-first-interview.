@@ -2,7 +2,7 @@
 
 dev:
 	docker compose up -d
-	turbo dev --filter=dashboard --filter=landing
+	pnpm dev
 
 stop:
 	docker compose down

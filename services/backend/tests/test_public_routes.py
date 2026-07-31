@@ -89,6 +89,35 @@ def test_apply_to_job_calls_notification(db_session, monkeypatch):
     assert calls == [response.json()["id"]]
 
 
+def test_apply_to_job_returns_a_discord_link_code(db_session, monkeypatch):
+    job = _seed_active_job(db_session, title="Barista C")
+    monkeypatch.setattr(public_routes, "notify_new_application", lambda *a, **k: None)
+
+    response = client.post(
+        f"/jobs/{job.id}/apply",
+        data={
+            "name": "Sam Lee",
+            "email": "sam@example.com",
+            "phone": "555-0102",
+            "address": "789 Pine Rd",
+        },
+        files={"resume": ("resume.pdf", b"fake", "application/pdf")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert isinstance(body["discord_link_code"], str)
+    assert len(body["discord_link_code"]) == 6
+
+    db = SessionLocal()
+    try:
+        candidate = db.query(Candidate).filter(Candidate.id == body["id"]).first()
+        assert candidate.discord_link_code == body["discord_link_code"]
+        assert candidate.discord_user_id is None
+    finally:
+        db.close()
+
+
 def test_apply_to_inactive_job_404s(db_session):
     business = Business(auth0_sub="auth0|seed-inactive", name="Acme Co")
     db_session.add(business)

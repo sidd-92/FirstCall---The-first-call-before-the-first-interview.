@@ -96,3 +96,34 @@ export interface McpToolCallResult {
   content: string[]
   structured_content: unknown
 }
+
+export interface JobPostingSummary {
+  id: number
+  title: string
+  location: string
+  employment_type: string
+  is_active: boolean
+  faq_count: number
+  screening_question_count: number
+}
+
+export interface FaqEntry {
+  question: string
+  answer: string
+}
+
+export interface JobPostingDetail {
+  id: number
+  title: string
+  description: string
+  location: string
+  employment_type: string
+  is_active: boolean
+  faq: FaqEntry[]
+  screening_questions: string[]
+}
+
+export interface JobPostingConfigUpdate {
+  faq: FaqEntry[]
+  screening_questions: string[]
+}

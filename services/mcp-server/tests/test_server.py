@@ -136,6 +136,21 @@ def test_reply_wraps_message_reply_semantics(monkeypatch):
     assert calls == [("msg-1", {"text": "thanks for reaching out"})]
 
 
+def test_initiate_wraps_commclient_initiate(monkeypatch):
+    calls = []
+
+    def fake_initiate(connection_id, recipient, text):
+        calls.append((connection_id, recipient, text))
+        return {"id": "conv-cold-1", "status": "active"}
+
+    monkeypatch.setattr(server.caspian._client, "initiate", fake_initiate)
+
+    result = server.initiate("conn-1", "candidate@example.com", "Hi there!")
+
+    assert result == {"id": "conv-cold-1", "status": "active"}
+    assert calls == [("conn-1", "candidate@example.com", "Hi there!")]
+
+
 def test_get_new_messages_drains_real_inbox_queue():
     msg1 = make_message(id="msg-1", text="first")
     msg2 = make_message(id="msg-2", text="second")

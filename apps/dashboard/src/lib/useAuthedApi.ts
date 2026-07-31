@@ -1,6 +1,6 @@
 import { useAuth0 } from '@auth0/auth0-react'
 import * as api from '@/lib/api'
-import type { BusinessOnboard, JobPostingCreate } from '@/lib/types'
+import type { BusinessOnboard, JobPostingConfigUpdate, JobPostingCreate } from '@/lib/types'
 
 /**
  * Binds every API call to a freshly-fetched Auth0 access token so callers
@@ -24,6 +24,10 @@ export function useAuthedApi() {
     listUpcomingInterviews: () => withToken(api.listUpcomingInterviews),
     createJobPosting: (payload: JobPostingCreate) =>
       withToken((token) => api.createJobPosting(token, payload)),
+    listJobPostings: () => withToken(api.listJobPostings),
+    getJobPosting: (id: string) => withToken((token) => api.getJobPosting(token, id)),
+    updateJobPostingConfig: (id: string, payload: JobPostingConfigUpdate) =>
+      withToken((token) => api.updateJobPostingConfig(token, id, payload)),
     listBusinesses: () => withToken(api.listBusinesses),
     onboardBusiness: (payload: BusinessOnboard) =>
       withToken((token) => api.onboardBusiness(token, payload)),

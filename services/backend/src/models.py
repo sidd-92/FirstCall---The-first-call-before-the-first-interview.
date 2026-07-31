@@ -109,6 +109,11 @@ class Candidate(Base):
     # agent, or the apply flow collects it) -- lets mcp-server's Agent 1
     # resolve an inbound Discord message to a candidate. Null until linked.
     discord_user_id: Mapped[str | None] = mapped_column(String, nullable=True, unique=True)
+    # Short one-time code shown on the apply confirmation screen; the
+    # candidate DMs it to the Discord bot to link discord_user_id above (see
+    # services/mcp-server/src/agents/agent1.py's linking flow). Left in place
+    # once used -- agent1 only consults it while discord_user_id is unset.
+    discord_link_code: Mapped[str | None] = mapped_column(String, nullable=True, unique=True)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
 
     business: Mapped["Business"] = relationship(back_populates="candidates")

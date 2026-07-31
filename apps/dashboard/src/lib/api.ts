@@ -3,7 +3,10 @@ import type {
   BusinessOnboard,
   CandidateDetail,
   CandidateSummary,
+  JobPostingConfigUpdate,
   JobPostingCreate,
+  JobPostingDetail,
+  JobPostingSummary,
   McpStatus,
   McpTool,
   McpToolCallResult,
@@ -63,6 +66,26 @@ export function createJobPosting(
 ): Promise<{ id: number }> {
   return request(token, '/jobs', {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export function listJobPostings(token: string): Promise<JobPostingSummary[]> {
+  return request(token, '/job-postings')
+}
+
+export function getJobPosting(token: string, id: string): Promise<JobPostingDetail> {
+  return request(token, `/job-postings/${id}`)
+}
+
+export function updateJobPostingConfig(
+  token: string,
+  id: string,
+  payload: JobPostingConfigUpdate,
+): Promise<JobPostingConfigUpdate> {
+  return request(token, `/job-postings/${id}`, {
+    method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   })

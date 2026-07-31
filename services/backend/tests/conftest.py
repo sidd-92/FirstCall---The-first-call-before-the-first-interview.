@@ -53,7 +53,7 @@ def _free_port() -> int:
 
 
 def _build_test_mcp_app(status_holder: dict) -> MCPServer:
-    """A real MCPServer instance exposing the same six tools (name,
+    """A real MCPServer instance exposing the same seven tools (name,
     description, input schema) as services/mcp-server/src/server.py, plus
     the same plain GET /status route -- so backend tests exercise the real
     MCP protocol (initialize/tools-list/tools-call, real JSON Schema) without
@@ -88,6 +88,11 @@ def _build_test_mcp_app(status_holder: dict) -> MCPServer:
     def reply(message_id: str, text: str) -> dict:
         """Reply directly to a specific inbound message."""
         return {"id": "reply-1"}
+
+    @app.tool()
+    def initiate(connection_id: str, recipient: str, text: str) -> dict:
+        """Cold-start a conversation on a connection."""
+        return {"id": "conv-cold-1", "status": "active"}
 
     @app.tool()
     def get_new_messages(max_messages: int = 50) -> list[dict]:

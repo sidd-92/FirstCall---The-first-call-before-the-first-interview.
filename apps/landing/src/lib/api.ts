@@ -15,6 +15,11 @@ export interface ApplicationPayload {
   resume: File
 }
 
+export interface ApplicationResult {
+  id: number
+  discord_link_code: string
+}
+
 async function parseErrorMessage(response: Response): Promise<string> {
   try {
     const data = await response.json()
@@ -36,7 +41,10 @@ export async function getJob(id: string): Promise<JobPosting> {
   return response.json()
 }
 
-export async function applyToJob(id: string, payload: ApplicationPayload): Promise<void> {
+export async function applyToJob(
+  id: string,
+  payload: ApplicationPayload,
+): Promise<ApplicationResult> {
   const form = new FormData()
   form.set('name', payload.name)
   form.set('email', payload.email)
@@ -49,4 +57,5 @@ export async function applyToJob(id: string, payload: ApplicationPayload): Promi
     body: form,
   })
   if (!response.ok) throw new Error(await parseErrorMessage(response))
+  return response.json()
 }

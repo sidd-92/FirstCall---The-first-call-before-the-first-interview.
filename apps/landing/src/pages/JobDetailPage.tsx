@@ -13,9 +13,11 @@ export function JobDetailPage() {
   const [job, setJob] = useState<JobPosting | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [submitted, setSubmitted] = useState(false)
+  const [discordLinkCode, setDiscordLinkCode] = useState<string | null>(null)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [copied, setCopied] = useState(false)
+  const discordInviteUrl = import.meta.env.VITE_DISCORD_INVITE_URL as string | undefined
 
   useEffect(() => {
     if (!id) return
@@ -39,13 +41,14 @@ export function JobDetailPage() {
     setSubmitting(true)
     setSubmitError(null)
     try {
-      await applyToJob(id, {
+      const result = await applyToJob(id, {
         name: String(formData.get('name') ?? ''),
         email: String(formData.get('email') ?? ''),
         phone: String(formData.get('phone') ?? ''),
         address: String(formData.get('address') ?? ''),
         resume,
       })
+      setDiscordLinkCode(result.discord_link_code)
       setSubmitted(true)
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : 'Failed to submit application.')
@@ -94,13 +97,40 @@ export function JobDetailPage() {
           <CardHeader>
             <CardTitle>Application submitted</CardTitle>
           </CardHeader>
-          <CardContent className="flex flex-col gap-3">
+          <CardContent className="flex flex-col gap-4">
             <p className="text-muted-foreground">
               Thanks for applying. You can also reach out directly by email.
             </p>
-            <Button variant="outline" onClick={handleCopyEmail} type="button">
+            <Button variant="outline" onClick={handleCopyEmail} type="button" className="w-fit">
               {copied ? 'Copied!' : 'Copy application email'}
             </Button>
+
+            {discordLinkCode && (
+              <div className="flex flex-col gap-2 rounded-md border p-4">
+                <p className="text-sm font-medium">Get updates over Discord (optional)</p>
+                <p className="text-sm text-muted-foreground">
+                  {discordInviteUrl ? (
+                    <>
+                      Join{' '}
+                      <a
+                        href={discordInviteUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-primary underline-offset-4 hover:underline"
+                      >
+                        our Discord server
+                      </a>{' '}
+                      and DM the bot the code below to connect your application.
+                    </>
+                  ) : (
+                    <>DM our Discord bot the code below to connect your application.</>
+                  )}
+                </p>
+                <code className="w-fit rounded bg-muted px-3 py-1.5 font-mono text-lg tracking-widest">
+                  {discordLinkCode}
+                </code>
+              </div>
+            )}
           </CardContent>
         </Card>
       ) : (

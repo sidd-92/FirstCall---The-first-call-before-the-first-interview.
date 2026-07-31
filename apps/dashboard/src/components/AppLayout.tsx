@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils'
 const NAV_LINKS = [
   { to: '/', label: 'Candidates' },
   { to: '/interviews', label: 'Interviews' },
+  { to: '/jobs', label: 'Jobs' },
   { to: '/jobs/new', label: 'Post a job' },
   { to: '/businesses', label: 'Businesses' },
   { to: '/mcp-server', label: 'MCP Server' },

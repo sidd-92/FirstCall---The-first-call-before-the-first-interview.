@@ -47,6 +47,7 @@ CREATE TABLE candidates (
     address VARCHAR,
     resume_file_path VARCHAR,
     discord_user_id VARCHAR UNIQUE,
+    discord_link_code VARCHAR UNIQUE,
     created_at DATETIME
 );
 
@@ -143,16 +144,17 @@ def seed_candidate(
     job_posting_id: int = 1,
     email: str = "candidate@example.com",
     discord_user_id: str | None = None,
+    discord_link_code: str | None = None,
 ) -> None:
     with db_module.engine.begin() as conn:
         conn.execute(
             text(
                 "INSERT INTO candidates "
                 "(id, business_id, job_posting_id, name, email, phone, address, "
-                "resume_file_path, discord_user_id, created_at) "
+                "resume_file_path, discord_user_id, discord_link_code, created_at) "
                 "VALUES (:id, :business_id, :job_posting_id, 'Jamie Doe', :email, "
                 "'555-0100', '123 Main St', '/resumes/jamie.pdf', :discord_user_id, "
-                "datetime('now'))"
+                ":discord_link_code, datetime('now'))"
             ),
             {
                 "id": candidate_id,
@@ -160,6 +162,7 @@ def seed_candidate(
                 "job_posting_id": job_posting_id,
                 "email": email,
                 "discord_user_id": discord_user_id,
+                "discord_link_code": discord_link_code,
             },
         )
 

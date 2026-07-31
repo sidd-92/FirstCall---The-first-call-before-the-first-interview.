@@ -17,7 +17,12 @@ HOLDING_MESSAGE = (
 UNRECOGNIZED_MESSAGE = (
     "Thanks for the message! We couldn't match this to an application on file -- "
     "please make sure you applied with the email tied to this account, or reach "
-    "out via the application email thread."
+    "out via the application email thread. If you have a Discord link code from "
+    "your application confirmation, send just that code here to connect."
+)
+
+LINKED_MESSAGE = (
+    "You're linked! We'll follow up here once there's an update on your application."
 )
 
 SEQUENCE_COMPLETE_MESSAGE = (

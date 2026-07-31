@@ -84,6 +84,16 @@ def reply(message_id: str, text: str) -> dict:
 
 
 @mcp.tool()
+def initiate(connection_id: str, recipient: str, text: str) -> dict:
+    """Cold-start a conversation on a connection -- unlike `send_message`,
+    this doesn't need an existing conversation_id from a prior inbound
+    message; pass the connection_id from `connect_channel`/`list_channels`
+    and the recipient address (e.g. an email address, or a Discord user id)
+    directly. Requires Capability.INITIATE on the connection."""
+    return caspian.initiate(connection_id, recipient, text)
+
+
+@mcp.tool()
 def get_new_messages(max_messages: int = 50) -> list[dict]:
     """Drain and return inbound messages buffered since the last call.
 

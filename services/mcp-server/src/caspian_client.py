@@ -106,6 +106,11 @@ class CaspianClient:
         """Reply to a specific inbound message."""
         return self._client.reply(message_id, text=text)
 
+    def initiate(self, connection_id: str, recipient: str, text: str) -> dict:
+        """Cold-start a conversation on a connection that hasn't received any
+        inbound message yet (needs Capability.INITIATE)."""
+        return self._client.initiate(connection_id, recipient, text)
+
     def get_new_messages(self, max_messages: int = 50) -> list[Message]:
         """Drain up to `max_messages` buffered inbound messages from the
         in-memory inbox populated by the background listener thread."""
