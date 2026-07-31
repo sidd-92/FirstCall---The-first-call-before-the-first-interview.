@@ -91,6 +91,10 @@ class Candidate(Base):
     phone: Mapped[str] = mapped_column(String)
     address: Mapped[str] = mapped_column(String)
     resume_file_path: Mapped[str] = mapped_column(String)
+    # Set once a candidate's Discord identity is linked (e.g. they DM the
+    # agent, or the apply flow collects it) -- lets mcp-server's Agent 1
+    # resolve an inbound Discord message to a candidate. Null until linked.
+    discord_user_id: Mapped[str | None] = mapped_column(String, nullable=True, unique=True)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
 
     business: Mapped["Business"] = relationship(back_populates="candidates")
@@ -105,6 +109,12 @@ class Conversation(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id"), index=True)
     channel: Mapped[ChannelType] = mapped_column(Enum(ChannelType))
+    # caspian-sdk's own conversation_id for this thread -- lets mcp-server's
+    # Agent 1 find the existing conversation (and thus candidate_id) for an
+    # inbound message without re-deriving it from sender identity every time.
+    external_conversation_id: Mapped[str | None] = mapped_column(
+        String, nullable=True, unique=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
 
     candidate: Mapped["Candidate"] = relationship(back_populates="conversations")
@@ -119,6 +129,11 @@ class Message(Base):
     direction: Mapped[MessageDirection] = mapped_column(Enum(MessageDirection))
     # Fernet-encrypted message content. Never store plaintext here.
     content_encrypted: Mapped[bytes] = mapped_column(LargeBinary)
+    # Optional tag for outbound messages ("faq_answer" | "screening_question" |
+    # "holding"); lets Agent 1 derive "which screening question is next" by
+    # counting prior screening_question messages, without an LLM call or a
+    # separate progress table. Null for inbound / untagged messages.
+    kind: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
 
     conversation: Mapped["Conversation"] = relationship(back_populates="messages")

@@ -61,6 +61,12 @@ class CaspianClient:
     def close(self) -> None:
         self._client.close()
 
+    @property
+    def raw_client(self) -> CommClient:
+        """The underlying `CommClient`, for callers (e.g. src/agents) that need
+        to register their own `on_message` handler or connect channels."""
+        return self._client
+
     # -- channels ------------------------------------------------------------
 
     def list_channels(self) -> list[dict]:

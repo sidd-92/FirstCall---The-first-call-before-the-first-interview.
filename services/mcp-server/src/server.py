@@ -10,6 +10,7 @@ import os
 from dotenv import load_dotenv
 from mcp.server.mcpserver import MCPServer
 
+from src.agents.agent1 import register as register_agent1
 from src.caspian_client import CaspianClient
 from src.logging_config import configure_logging, get_logger
 
@@ -82,6 +83,10 @@ def get_conversation(conversation_id: str) -> list[dict]:
 
 
 def main() -> None:
+    # Connect Email + Discord and register Agent 1's handler before the
+    # listener starts pulling events, so nothing arrives un-handled.
+    register_agent1(caspian.raw_client)
+
     # TODO(listener-thread): start the background thread that runs
     # `CommClient.listen()` for the lifetime of this process. `listen()`
     # blocks and fires `on_message` synchronously per inbound message, which
