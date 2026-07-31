@@ -19,7 +19,7 @@ import re
 from caspian_sdk import CommClient, Message
 
 from src import db, storage
-from src.agents import faq, screening
+from src.agents import agent2, faq, screening
 from src.agents.config import load_job_agent_config
 from src.logging_config import get_logger
 
@@ -134,7 +134,9 @@ def _handle_discord(message: Message) -> None:
     if turn.kind == screening.SCREENING_QUESTION_KIND:
         conv_log.info("screening_question_asked", question_index=question_index)
     else:
+        db.set_pipeline_stage(candidate_id, "screening_completed")
         conv_log.info("screening_sequence_complete")
+        agent2.notify_screening_completed(message._client, candidate_id)
 
 
 def handle_message(message: Message) -> None:

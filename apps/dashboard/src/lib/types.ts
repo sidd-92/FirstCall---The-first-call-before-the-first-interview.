@@ -40,3 +40,27 @@ export interface UpcomingInterview {
   job_posting_title: string
   scheduled_at: string
 }
+
+export interface JobPostingCreate {
+  title: string
+  description: string
+  location: string
+  employment_type: string
+  pay_min: number | null
+  pay_max: number | null
+  pay_currency: string
+  benefits: string[]
+}
+
+export interface Business {
+  id: number
+  auth0_sub: string
+  name: string
+  owner_email: string | null
+  created_at: string
+}
+
+export interface BusinessOnboard {
+  name: string
+  owner_email: string | null
+}

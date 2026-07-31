@@ -28,6 +28,7 @@ from sqlalchemy import (
     insert,
     select,
 )
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./firstcall.db")
 
@@ -37,6 +38,14 @@ engine = create_engine(
 )
 
 metadata = MetaData()
+
+businesses = Table(
+    "businesses",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("name", String),
+    Column("owner_email", String),
+)
 
 job_postings = Table(
     "job_postings",
@@ -54,6 +63,7 @@ candidates = Table(
     Column("id", Integer, primary_key=True),
     Column("business_id", Integer),
     Column("job_posting_id", Integer, ForeignKey("job_postings.id")),
+    Column("name", String),
     Column("email", String),
     Column("discord_user_id", String),
 )
@@ -63,6 +73,7 @@ pipeline_stages = Table(
     metadata,
     Column("candidate_id", Integer, primary_key=True),
     Column("stage", String),
+    Column("updated_at", DateTime),
 )
 
 conversations = Table(
@@ -93,7 +104,7 @@ def _utcnow() -> datetime:
 
 def get_candidate(candidate_id: int) -> dict | None:
     stmt = select(
-        candidates.c.id, candidates.c.business_id, candidates.c.job_posting_id
+        candidates.c.id, candidates.c.business_id, candidates.c.job_posting_id, candidates.c.name
     ).where(candidates.c.id == candidate_id)
     with engine.connect() as conn:
         row = conn.execute(stmt).first()
@@ -104,7 +115,7 @@ def find_candidate_by_email(email: str, job_posting_id: int | None = None) -> di
     """Match a candidate by application email, optionally scoped to a job posting
     (disambiguates the same person applying to multiple postings)."""
     stmt = select(
-        candidates.c.id, candidates.c.business_id, candidates.c.job_posting_id
+        candidates.c.id, candidates.c.business_id, candidates.c.job_posting_id, candidates.c.name
     ).where(candidates.c.email == email)
     if job_posting_id is not None:
         stmt = stmt.where(candidates.c.job_posting_id == job_posting_id)
@@ -115,7 +126,7 @@ def find_candidate_by_email(email: str, job_posting_id: int | None = None) -> di
 
 def find_candidate_by_discord_user_id(discord_user_id: str) -> dict | None:
     stmt = select(
-        candidates.c.id, candidates.c.business_id, candidates.c.job_posting_id
+        candidates.c.id, candidates.c.business_id, candidates.c.job_posting_id, candidates.c.name
     ).where(candidates.c.discord_user_id == discord_user_id)
     with engine.connect() as conn:
         row = conn.execute(stmt).first()
@@ -140,6 +151,30 @@ def get_pipeline_stage(candidate_id: int) -> str | None:
     with engine.connect() as conn:
         row = conn.execute(stmt).first()
     return row.stage if row else None
+
+
+def set_pipeline_stage(candidate_id: int, stage: str) -> None:
+    """Insert or update this candidate's pipeline stage (candidate_id is the
+    table's primary key -- one row per candidate, not a history)."""
+    now = _utcnow()
+    stmt = sqlite_insert(pipeline_stages).values(
+        candidate_id=candidate_id, stage=stage, updated_at=now
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[pipeline_stages.c.candidate_id],
+        set_={"stage": stage, "updated_at": now},
+    )
+    with engine.begin() as conn:
+        conn.execute(stmt)
+
+
+def get_business(business_id: int) -> dict | None:
+    stmt = select(businesses.c.id, businesses.c.name, businesses.c.owner_email).where(
+        businesses.c.id == business_id
+    )
+    with engine.connect() as conn:
+        row = conn.execute(stmt).first()
+    return row._asdict() if row else None
 
 
 def find_conversation_by_external_id(external_conversation_id: str) -> dict | None:

@@ -15,6 +15,7 @@ CREATE TABLE businesses (
     id INTEGER PRIMARY KEY,
     auth0_sub VARCHAR UNIQUE,
     name VARCHAR,
+    owner_email VARCHAR,
     created_at DATETIME
 );
 
@@ -86,14 +87,19 @@ def db(tmp_path, monkeypatch):
     return db_module
 
 
-def seed_business(db_module, business_id: int = 1) -> None:
+def seed_business(db_module, business_id: int = 1, owner_email: str | None = None) -> None:
     with db_module.engine.begin() as conn:
         conn.execute(
             text(
-                "INSERT INTO businesses (id, auth0_sub, name, created_at) "
-                "VALUES (:id, :sub, :name, datetime('now'))"
+                "INSERT INTO businesses (id, auth0_sub, name, owner_email, created_at) "
+                "VALUES (:id, :sub, :name, :owner_email, datetime('now'))"
             ),
-            {"id": business_id, "sub": f"auth0|{business_id}", "name": "Acme Co"},
+            {
+                "id": business_id,
+                "sub": f"auth0|{business_id}",
+                "name": "Acme Co",
+                "owner_email": owner_email,
+            },
         )
 
 

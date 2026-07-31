@@ -77,6 +77,21 @@ def verify_token(token: str) -> dict:
         ) from exc
 
 
+def get_current_auth0_sub(
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+) -> str:
+    """FastAPI dependency: verify the request's bearer token and return its
+    `sub` claim.
+
+    Unlike `get_current_business`, this does NOT require the account to have
+    a Business row yet -- it exists so the onboarding route can register a
+    business for an account that isn't registered (which is exactly the case
+    `get_current_business` rejects).
+    """
+    claims = verify_token(credentials.credentials)
+    return claims.get("sub")
+
+
 def get_current_business(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
     db: Session = Depends(get_db),

@@ -13,6 +13,8 @@ dependencies = [
     "python-jose[cryptography]",
     "python-multipart",
     "python-dotenv",
+    "anthropic",
+    "caspian-sdk",
 ]
 
 [dependency-groups]

@@ -181,10 +181,17 @@ def test_discord_asks_second_question_on_next_turn(db):
     assert second._client.replies[0]["text"] == "What are your salary expectations?"
 
 
-def test_discord_sends_closing_message_after_last_question(db):
+def test_discord_sends_closing_message_after_last_question(db, monkeypatch):
     setup_job(db)
     seed_candidate(db, discord_user_id="disc-1")
     seed_pipeline_stage(db, stage="screening_assigned")
+
+    notified = []
+    monkeypatch.setattr(
+        agent1.agent2,
+        "notify_screening_completed",
+        lambda client, candidate_id: notified.append(candidate_id),
+    )
 
     conv_id = "ext-conv-discord-1"
     texts = ["hi", "answer one", "answer two"]
@@ -196,6 +203,8 @@ def test_discord_sends_closing_message_after_last_question(db):
         agent1.handle_message(last_message)
 
     assert "that's everything for now" in last_message._client.replies[0]["text"]
+    assert db.get_pipeline_stage(1) == "screening_completed"
+    assert notified == [1]
 
 
 def test_discord_unresolved_candidate_gets_generic_reply(db):

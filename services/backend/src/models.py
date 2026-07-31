@@ -58,6 +58,11 @@ class Business(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     auth0_sub: Mapped[str] = mapped_column(String, unique=True, index=True)
     name: Mapped[str] = mapped_column(String)
+    # Where Agent 2's ops notifications (new application, screening
+    # completed) get sent. Null until the business fills this in somewhere
+    # (onboarding isn't built yet) -- notifications are skipped, not errored,
+    # when it's unset.
+    owner_email: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
 
     job_postings: Mapped[list["JobPosting"]] = relationship(back_populates="business")
@@ -72,6 +77,15 @@ class JobPosting(Base):
     business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"), index=True)
     title: Mapped[str] = mapped_column(String)
     description: Mapped[str] = mapped_column(Text)
+    location: Mapped[str] = mapped_column(String, default="")
+    # Free-text, e.g. "Permanent, Full-time" -- mirrors how job boards like
+    # Indeed show multiple tags rather than a single enum value.
+    employment_type: Mapped[str] = mapped_column(String, default="")
+    pay_min: Mapped[int | None] = mapped_column(nullable=True)
+    pay_max: Mapped[int | None] = mapped_column(nullable=True)
+    pay_currency: Mapped[str] = mapped_column(String, default="INR")
+    # JSON-encoded list[str], e.g. '["Paid time off", "Provident Fund"]'.
+    benefits_json: Mapped[str] = mapped_column(Text, default="[]")
     faq_json: Mapped[str] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)

@@ -158,3 +158,6 @@ __pycache__/
 
 # SQLite
 *.db
+
+# Uploaded resumes (services/backend/src/routes/public.py's apply_to_job)
+services/backend/resumes/

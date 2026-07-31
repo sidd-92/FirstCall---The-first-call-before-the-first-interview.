@@ -13,7 +13,7 @@ load_dotenv()
 from src.db import engine
 from src.logging_config import configure_logging, get_logger
 from src.models import Base
-from src.routes import dashboard, public
+from src.routes import businesses, dashboard, public
 
 configure_logging()
 log = get_logger()
@@ -47,6 +47,7 @@ app.add_middleware(
 
 app.include_router(public.router)
 app.include_router(dashboard.router)
+app.include_router(businesses.router)
 
 
 @app.exception_handler(NotImplementedError)

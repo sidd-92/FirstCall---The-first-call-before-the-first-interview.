@@ -6,6 +6,8 @@ import { cn } from '@/lib/utils'
 const NAV_LINKS = [
   { to: '/', label: 'Candidates' },
   { to: '/interviews', label: 'Interviews' },
+  { to: '/jobs/new', label: 'Post a job' },
+  { to: '/businesses', label: 'Businesses' },
 ]
 
 export function AppLayout() {
