@@ -8,6 +8,7 @@ const NAV_LINKS = [
   { to: '/interviews', label: 'Interviews' },
   { to: '/jobs/new', label: 'Post a job' },
   { to: '/businesses', label: 'Businesses' },
+  { to: '/mcp-server', label: 'MCP Server' },
 ]
 
 export function AppLayout() {

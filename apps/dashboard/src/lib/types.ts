@@ -64,3 +64,35 @@ export interface BusinessOnboard {
   name: string
   owner_email: string | null
 }
+
+export type McpServerState = 'starting' | 'running' | 'error' | 'disconnected'
+
+export interface McpStatus {
+  status: McpServerState
+  channels: Record<string, string>
+}
+
+export interface JsonSchemaProperty {
+  type?: string
+  description?: string
+  default?: unknown
+  enum?: (string | number)[]
+}
+
+export interface McpToolInputSchema {
+  type?: string
+  properties?: Record<string, JsonSchemaProperty>
+  required?: string[]
+}
+
+export interface McpTool {
+  name: string
+  description: string | null
+  input_schema: McpToolInputSchema
+}
+
+export interface McpToolCallResult {
+  is_error: boolean
+  content: string[]
+  structured_content: unknown
+}

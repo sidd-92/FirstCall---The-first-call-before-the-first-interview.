@@ -12,11 +12,14 @@ AuditLogEntry table (actor = the verified Auth0 `sub`).
 """
 
 import json
+import os
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from src import mcp_client
 from src.anthropic_client import review_transcript
 from src.auth import get_current_actor_and_business, get_current_business
 from src.crypto import decrypt_content
@@ -36,6 +39,15 @@ from src.models import (
 log = get_logger()
 
 router = APIRouter(tags=["dashboard"])
+
+MCP_SERVER_PORT = os.environ.get("MCP_SERVER_PORT", "8100")
+# Plain HTTP status endpoint added alongside the MCP protocol itself -- see
+# services/mcp-server/src/server.py's GET /status -- not an MCP tool call.
+MCP_STATUS_URL = os.environ.get("MCP_SERVER_STATUS_URL", f"http://mcp-server:{MCP_SERVER_PORT}/status")
+
+
+class McpToolCallRequest(BaseModel):
+    arguments: dict = {}
 
 
 class JobPostingCreate(BaseModel):
@@ -307,3 +319,74 @@ def review_with_ai(
         has_score=score is not None,
     )
     return {"score": score, "summary": summary}
+
+
+def _serialize_tool_result(result) -> dict:
+    content = []
+    for block in result.content:
+        content.append(block.text if hasattr(block, "text") else block.model_dump())
+    return {
+        "is_error": result.is_error,
+        "content": content,
+        "structured_content": result.structured_content,
+    }
+
+
+@router.get("/mcp-server/status")
+async def mcp_server_status(business_id: int = Depends(get_current_business)):
+    """Proxy mcp-server's plain GET /status (not an MCP protocol call).
+
+    Three distinct outcomes, kept distinct on purpose:
+    - mcp-server reachable and reporting "running" -> passed through as-is.
+    - mcp-server reachable but reporting "error" (e.g. a channel failed to
+      authenticate) -> also passed through as-is; this is a real, reachable
+      response, just an unhealthy one.
+    - mcp-server not reachable at all (connection refused, timeout, DNS
+      failure, ...) -> synthesized {"status": "disconnected", "channels": {}},
+      a calm "nothing's there" state, never an unhandled 500.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(MCP_STATUS_URL)
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPError:
+        log.info("mcp_server_unreachable", url=MCP_STATUS_URL)
+        return {"status": "disconnected", "channels": {}}
+
+
+@router.get("/mcp-server/tools")
+async def mcp_server_tools(business_id: int = Depends(get_current_business)):
+    """Real MCP `tools/list` call against mcp-server."""
+    try:
+        tools = await mcp_client.list_tools()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Could not reach mcp-server: {exc}",
+        ) from exc
+
+    return [
+        {"name": tool.name, "description": tool.description, "input_schema": tool.input_schema}
+        for tool in tools
+    ]
+
+
+@router.post("/mcp-server/tools/{tool_name}/call")
+async def call_mcp_server_tool(
+    tool_name: str,
+    payload: McpToolCallRequest,
+    business_id: int = Depends(get_current_business),
+):
+    """Real MCP `tools/call` request, forwarding whatever arguments the
+    dashboard's auto-generated form collected."""
+    log.info("mcp_tool_call_requested", tool_name=tool_name, business_id=business_id)
+    try:
+        result = await mcp_client.call_tool(tool_name, payload.arguments)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"MCP tool call failed: {exc}",
+        ) from exc
+
+    return _serialize_tool_result(result)

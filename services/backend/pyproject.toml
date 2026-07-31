@@ -15,12 +15,13 @@ dependencies = [
     "python-dotenv",
     "anthropic",
     "caspian-sdk",
+    "mcp",
+    "httpx",
 ]
 
 [dependency-groups]
 dev = [
     "pytest",
-    "httpx",
     "ruff",
 ]
 

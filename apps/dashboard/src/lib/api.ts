@@ -4,6 +4,9 @@ import type {
   CandidateDetail,
   CandidateSummary,
   JobPostingCreate,
+  McpStatus,
+  McpTool,
+  McpToolCallResult,
   UpcomingInterview,
 } from '@/lib/types'
 
@@ -74,5 +77,25 @@ export function onboardBusiness(token: string, payload: BusinessOnboard): Promis
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
+  })
+}
+
+export function getMcpServerStatus(token: string): Promise<McpStatus> {
+  return request(token, '/mcp-server/status')
+}
+
+export function listMcpTools(token: string): Promise<McpTool[]> {
+  return request(token, '/mcp-server/tools')
+}
+
+export function callMcpTool(
+  token: string,
+  toolName: string,
+  args: Record<string, unknown>,
+): Promise<McpToolCallResult> {
+  return request(token, `/mcp-server/tools/${encodeURIComponent(toolName)}/call`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ arguments: args }),
   })
 }

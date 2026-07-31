@@ -27,5 +27,9 @@ export function useAuthedApi() {
     listBusinesses: () => withToken(api.listBusinesses),
     onboardBusiness: (payload: BusinessOnboard) =>
       withToken((token) => api.onboardBusiness(token, payload)),
+    getMcpServerStatus: () => withToken(api.getMcpServerStatus),
+    listMcpTools: () => withToken(api.listMcpTools),
+    callMcpTool: (toolName: string, args: Record<string, unknown>) =>
+      withToken((token) => api.callMcpTool(token, toolName, args)),
   }
 }
