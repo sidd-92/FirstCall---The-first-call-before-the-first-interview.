@@ -1,0 +1,66 @@
+# Both services share one SQLite database file (see services/backend/src/models.py
+# for the canonical schema) via the `sqlite_data` named volume, mounted at /data in
+# each container. services/mcp-server/src/storage.py's own store is superseded by
+# this shared DB -- it isn't a second source of truth.
+
+services:
+  mcp-server:
+    build:
+      context: ./services/mcp-server
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: sqlite:////data/firstcall.db
+    volumes:
+      - sqlite_data:/data
+    # Not published to the host -- this is a background process (buffers
+    # inbound Caspian messages via a listener thread) that other containers
+    # reach over the compose network by service name, not something a
+    # browser or host client calls directly. See src/server.py: it serves
+    # MCP over streamable-http (not stdio) specifically so it can run this
+    # way as a long-lived container instead of a per-client subprocess.
+    expose:
+      - "${MCP_SERVER_PORT:-8100}"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import socket, os; socket.create_connection(('localhost', int(os.environ.get('MCP_SERVER_PORT', 8100))), timeout=3).close()",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./services/backend
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: sqlite:////data/firstcall.db
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - sqlite_data:/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  sqlite_data:

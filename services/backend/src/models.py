@@ -1,0 +1,156 @@
+"""SQLAlchemy models for FirstCall.
+
+All business-owned rows (job postings, candidates, audit entries, and —
+transitively, via candidate/job posting — conversations, messages, pipeline
+stages) are scoped by `business_id`. Every query in routes/dashboard.py must
+filter by the `business_id` resolved from the verified Auth0 JWT
+(`get_current_business` in auth.py) -- never trust a client-supplied
+business_id.
+
+`Message.content_encrypted` stores Fernet-encrypted message content; message
+bodies must never be written to this column in plaintext.
+"""
+
+import enum
+from datetime import datetime, timezone
+
+from sqlalchemy import (
+    Boolean,
+    Enum,
+    ForeignKey,
+    LargeBinary,
+    String,
+    Text,
+)
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class ChannelType(str, enum.Enum):
+    email = "email"
+    discord = "discord"
+
+
+class MessageDirection(str, enum.Enum):
+    inbound = "inbound"
+    outbound = "outbound"
+
+
+class PipelineStageName(str, enum.Enum):
+    applied = "applied"
+    screening_assigned = "screening_assigned"
+    screening_completed = "screening_completed"
+    shortlisted = "shortlisted"
+    interview_scheduled = "interview_scheduled"
+    confirmed = "confirmed"
+
+
+class Business(Base):
+    __tablename__ = "businesses"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    auth0_sub: Mapped[str] = mapped_column(String, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+    job_postings: Mapped[list["JobPosting"]] = relationship(back_populates="business")
+    candidates: Mapped[list["Candidate"]] = relationship(back_populates="business")
+    audit_log_entries: Mapped[list["AuditLogEntry"]] = relationship(back_populates="business")
+
+
+class JobPosting(Base):
+    __tablename__ = "job_postings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"), index=True)
+    title: Mapped[str] = mapped_column(String)
+    description: Mapped[str] = mapped_column(Text)
+    faq_json: Mapped[str] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+    business: Mapped["Business"] = relationship(back_populates="job_postings")
+    candidates: Mapped[list["Candidate"]] = relationship(back_populates="job_posting")
+
+
+class Candidate(Base):
+    __tablename__ = "candidates"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"), index=True)
+    job_posting_id: Mapped[int] = mapped_column(ForeignKey("job_postings.id"), index=True)
+    name: Mapped[str] = mapped_column(String)
+    email: Mapped[str] = mapped_column(String)
+    phone: Mapped[str] = mapped_column(String)
+    address: Mapped[str] = mapped_column(String)
+    resume_file_path: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+    business: Mapped["Business"] = relationship(back_populates="candidates")
+    job_posting: Mapped["JobPosting"] = relationship(back_populates="candidates")
+    conversations: Mapped[list["Conversation"]] = relationship(back_populates="candidate")
+    pipeline_stages: Mapped[list["PipelineStage"]] = relationship(back_populates="candidate")
+
+
+class Conversation(Base):
+    __tablename__ = "conversations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id"), index=True)
+    channel: Mapped[ChannelType] = mapped_column(Enum(ChannelType))
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+    candidate: Mapped["Candidate"] = relationship(back_populates="conversations")
+    messages: Mapped[list["Message"]] = relationship(back_populates="conversation")
+
+
+class Message(Base):
+    __tablename__ = "messages"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(ForeignKey("conversations.id"), index=True)
+    direction: Mapped[MessageDirection] = mapped_column(Enum(MessageDirection))
+    # Fernet-encrypted message content. Never store plaintext here.
+    content_encrypted: Mapped[bytes] = mapped_column(LargeBinary)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+    conversation: Mapped["Conversation"] = relationship(back_populates="messages")
+
+
+class PipelineStage(Base):
+    __tablename__ = "pipeline_stages"
+
+    candidate_id: Mapped[int] = mapped_column(
+        ForeignKey("candidates.id"), primary_key=True
+    )
+    stage: Mapped[PipelineStageName] = mapped_column(Enum(PipelineStageName))
+    updated_at: Mapped[datetime] = mapped_column(default=_utcnow, onupdate=_utcnow)
+
+    candidate: Mapped["Candidate"] = relationship(back_populates="pipeline_stages")
+
+
+class AuditLogEntry(Base):
+    """Append-only audit trail of who did what to which candidate.
+
+    Distinct from structlog operational logs (logging_config.py) -- this
+    table is the source of truth for business-facing audit history and
+    must never be edited or deleted, only inserted into.
+    """
+
+    __tablename__ = "audit_log_entries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"), index=True)
+    actor: Mapped[str] = mapped_column(String)  # Auth0 sub of who acted
+    action: Mapped[str] = mapped_column(String)
+    target_candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id"))
+    timestamp: Mapped[datetime] = mapped_column(default=_utcnow)
+
+    business: Mapped["Business"] = relationship(back_populates="audit_log_entries")

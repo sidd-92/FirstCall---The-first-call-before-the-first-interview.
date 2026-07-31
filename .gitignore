@@ -141,3 +141,20 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# macOS
+.DS_Store
+
+# Turborepo
+.turbo/
+
+# Build output
+build/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# SQLite
+*.db

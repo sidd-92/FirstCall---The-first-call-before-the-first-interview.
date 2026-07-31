@@ -1,0 +1,14 @@
+{
+  "name": "firstcall",
+  "private": true,
+  "packageManager": "pnpm@9.0.0",
+  "scripts": {
+    "dev": "turbo dev --filter=dashboard --filter=landing",
+    "build": "turbo build --filter=dashboard --filter=landing",
+    "lint": "turbo lint --filter=dashboard --filter=landing",
+    "test": "turbo test --filter=dashboard --filter=landing"
+  },
+  "devDependencies": {
+    "turbo": "^2.0.0"
+  }
+}
