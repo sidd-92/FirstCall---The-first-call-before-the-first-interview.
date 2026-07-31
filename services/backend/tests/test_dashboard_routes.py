@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import src.routes.dashboard as dashboard_routes
-from src.auth import get_current_business
+from src.auth import get_current_actor_and_business, get_current_business
 from src.crypto import _fernet
 from src.main import app
 from src.models import (
@@ -81,7 +81,10 @@ def _seed_candidate_with_transcript(db_session, suffix: str = "a") -> tuple[int,
 
 def test_review_with_ai_returns_score_and_summary(db_session, monkeypatch):
     business_id, candidate_id = _seed_candidate_with_transcript(db_session, suffix="1")
-    app.dependency_overrides[get_current_business] = lambda: business_id
+    app.dependency_overrides[get_current_actor_and_business] = lambda: (
+        business_id,
+        "auth0|review-actor-1",
+    )
     monkeypatch.setattr(
         dashboard_routes, "review_transcript", lambda transcript: (8, "Strong candidate.")
     )
@@ -94,7 +97,10 @@ def test_review_with_ai_returns_score_and_summary(db_session, monkeypatch):
 
 def test_review_with_ai_passes_full_transcript_to_llm(db_session, monkeypatch):
     business_id, candidate_id = _seed_candidate_with_transcript(db_session, suffix="2")
-    app.dependency_overrides[get_current_business] = lambda: business_id
+    app.dependency_overrides[get_current_actor_and_business] = lambda: (
+        business_id,
+        "auth0|review-actor-2",
+    )
     captured = {}
 
     def fake_review(transcript: str):
@@ -131,7 +137,10 @@ def test_review_with_ai_404s_for_candidate_without_transcript(db_session):
     db_session.commit()
     db_session.refresh(candidate)
 
-    app.dependency_overrides[get_current_business] = lambda: business.id
+    app.dependency_overrides[get_current_actor_and_business] = lambda: (
+        business.id,
+        "auth0|review-actor-3",
+    )
 
     response = client.post(f"/candidates/{candidate.id}/review-with-ai")
     assert response.status_code == 404

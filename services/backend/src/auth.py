@@ -1,13 +1,13 @@
 """Auth0 JWT verification via JWKS.
 
 Reads `AUTH0_DOMAIN` and `AUTH0_AUDIENCE` from the environment. Dashboard
-routes depend on `get_current_business`, which verifies the bearer token's
-signature/claims against Auth0's JWKS endpoint and resolves the token's
-`sub` claim to a `Business.id`.
+routes depend on `get_current_business` / `get_current_actor_and_business`,
+which verify the bearer token's signature/claims against Auth0's JWKS
+endpoint and resolve the token's `sub` claim to a `Business.id`.
 
-Every dashboard route MUST use `get_current_business` to obtain the
-business_id for a request -- never accept a business_id from the client
-(query param, body, or header) and trust it directly.
+Every dashboard route MUST obtain the business_id from one of these
+dependencies -- never accept a business_id from the client (query param,
+body, or header) and trust it directly.
 """
 
 import json
@@ -92,15 +92,16 @@ def get_current_auth0_sub(
     return claims.get("sub")
 
 
-def get_current_business(
+def get_current_actor_and_business(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
     db: Session = Depends(get_db),
-) -> int:
-    """FastAPI dependency: verify the request's bearer token and resolve it
-    to a `Business.id`.
+) -> tuple[int, str]:
+    """FastAPI dependency: verify the bearer token and resolve it to
+    `(business_id, auth0_sub)`.
 
-    Returns the verified business_id -- routes must use this value for
-    every query and must never accept a business_id supplied by the client.
+    Like `get_current_business` but also returns the verified `sub`, which
+    routes that write to `AuditLogEntry` need for the `actor` column. Never
+    trust a business_id supplied by the client -- use only this value.
     """
     claims = verify_token(credentials.credentials)
     auth0_sub = claims.get("sub")
@@ -111,4 +112,18 @@ def get_current_business(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="No business is registered for this account",
         )
-    return business.id
+    return business.id, auth0_sub
+
+
+def get_current_business(
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+) -> int:
+    """FastAPI dependency: verify the request's bearer token and resolve it
+    to a `Business.id`.
+
+    Returns the verified business_id -- routes must use this value for
+    every query and must never accept a business_id supplied by the client.
+    """
+    business_id, _ = get_current_actor_and_business(credentials, db)
+    return business_id

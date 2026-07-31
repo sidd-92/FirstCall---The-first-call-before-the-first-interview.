@@ -31,7 +31,7 @@ def _email_connection_id(client: CommClient) -> str:
 def notify_screening_completed(client: CommClient, candidate_id: int) -> None:
     """Best-effort: a failed notification must never break Agent 1's reply
     to the candidate, so every error here is caught and logged, not raised."""
-    notify_log = log.bind(candidate_id=candidate_id, event="screening_completed")
+    notify_log = log.bind(candidate_id=candidate_id, notification_type="screening_completed")
 
     candidate = db.get_candidate(candidate_id)
     if candidate is None:

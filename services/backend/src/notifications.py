@@ -42,11 +42,15 @@ def notify_new_application(
     raised."""
     notify_log = log.bind(candidate_id=candidate.id, business_id=business.id)
 
-    if not business.owner_email:
-        notify_log.warning("notification_skipped", event="new_application", reason="no_owner_email")
-        return
-
     try:
+        if not business.owner_email:
+            notify_log.warning(
+                "notification_skipped",
+                notification_type="new_application",
+                reason="no_owner_email",
+            )
+            return
+
         connection_id = _email_connection_id()
         _client().initiate(
             connection_id,
@@ -56,6 +60,8 @@ def notify_new_application(
                 f"'{job_posting.title}'. Review it in the FirstCall dashboard."
             ),
         )
-        notify_log.info("notification_sent", event="new_application")
+        notify_log.info("notification_sent", notification_type="new_application")
     except Exception:  # noqa: BLE001 -- best-effort by design, see docstring
-        notify_log.warning("notification_failed", event="new_application", exc_info=True)
+        notify_log.warning(
+            "notification_failed", notification_type="new_application", exc_info=True
+        )
