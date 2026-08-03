@@ -11,12 +11,51 @@ on `message.channel` instead.
   once HR has assigned screening for that candidate; otherwise send a
   holding reply. No LLM call is used to sequence questions -- only (later,
   in a separate agent) to score/summarize the finished conversation.
+
+Discord privacy invariant: screening answers (salary expectations, work
+history, etc.) are candidate-specific and must never be visible to another
+candidate. caspian-sdk's Discord integration is guild/server-oriented by
+default (see caspian_sdk.CommClient.install_discord's docstring) and
+`Message.reply()` always replies "on the channel the message arrived from"
+-- so a naive reply-based flow leaks straight into a shared server channel.
+Every conversation this module treats as safe for screening content is
+tracked with `is_dm=True` (src/db.py's `conversations.is_dm` column, which
+*we* set -- never inferred from the inbound message). Anything else --
+including a candidate's very first message, wherever it lands -- gets at
+most a generic, non-revealing reply.
+
+This is fail-CLOSED by design: `caspian_sdk.Message` (checked directly
+against the installed 0.6.1 package) carries no field of any kind that
+distinguishes a DM from a guild/public-channel message -- no `is_dm`,
+`guild_id`, `channel_type`, or similar; `sender` is an untyped `dict | None`
+populated straight from the gateway payload, and the only key any code here
+relies on is `"address"`. So `is_dm=True` is only ever recorded when
+`client.initiate()`'s own response hands back a conversation id we can
+positively parse (see `_open_discord_dm`) -- never assumed from timing or
+"the next message after we tried to DM them." A candidate with Discord's
+"block DMs from server members" privacy setting enabled, for example, could
+make `initiate()` return successfully with a body we can't parse as
+confirmation; treating that as "probably a DM" would silently reopen the
+exact leak this module exists to close, so it doesn't -- an unconfirmed
+invite just means no further automated screening content goes out until a
+message arrives on a conversation we've explicitly confirmed.
+
+Known gap: the installed caspian-sdk (0.6.1) dispatches exactly three event
+types (message.received, interaction.received, reaction.received; see
+`CommClient._dispatch_event`) and has no "member joined the server" hook of
+any kind. So a candidate's *first-ever* contact -- typing their Discord link
+code somewhere -- cannot be pre-empted by a join-time DM; the earliest this
+code can act is the moment that first message arrives, at which point it
+immediately pivots to DMs for everything else. Closing that first-message
+gap for real would need either a Discord-native integration (discord.py
+`on_member_join`) alongside caspian-sdk, or gateway-side support caspian-sdk
+doesn't currently expose.
 """
 
 import os
 import re
 
-from caspian_sdk import CommClient, Message
+from caspian_sdk import CommClient, CommError, Message
 
 from src import db, status, storage
 from src.agents import agent2, faq, screening
@@ -26,6 +65,11 @@ from src.logging_config import get_logger
 log = get_logger()
 
 JOB_TAG_RE = re.compile(r"\[JOB-(\d+)\]")
+
+# Set once at startup by `register()`. Needed to `initiate()` a DM, which
+# (unlike `reply()`/`send_message()`) requires the connection id rather than
+# an existing conversation id.
+_discord_connection: dict[str, str | None] = {"id": None}
 
 
 def _get_or_create_conversation(
@@ -84,13 +128,107 @@ def _handle_email(message: Message) -> None:
     conv_log.info("faq_answered", used_llm_fallback=used_llm_fallback)
 
 
-def _resolve_discord_candidate(message: Message) -> tuple[int, int] | None:
-    """Returns (candidate_id, conversation_id) if this Discord thread is
-    already linked to a candidate, else None."""
-    existing = db.find_conversation_by_external_id(message.conversation_id)
-    if existing is not None:
-        return existing["candidate_id"], existing["id"]
+def _open_discord_dm(
+    client: CommClient, discord_user_id: str, text: str
+) -> tuple[str, str | None]:
+    """Best-effort: proactively DM a candidate on Discord via `initiate()`
+    (needs Capability.INITIATE), the only SDK primitive that addresses a
+    recipient directly rather than replying wherever a message came from.
 
+    Never raises: a failed DM must not break whatever caller triggered it
+    (an inbound message handler, or the dashboard's assign-screening call).
+
+    Returns (status, external_conversation_id):
+    - ("confirmed", id): `initiate()` succeeded and its response included a
+      conversation id we recognize -- safe to record as `is_dm=True` and
+      send screening content there.
+    - ("unconfirmed", None): `initiate()` succeeded, but its response didn't
+      include a recognizable id. Fail CLOSED (see module docstring): the
+      message plausibly reached the candidate, but we cannot verify or
+      track it as their DM, so no automated screening content is sent
+      through this call, and no future inbound message is trusted as this
+      DM either -- there is nothing to positively match it against.
+    - ("failed", None): no Discord connection configured, or `initiate()`
+      itself raised.
+    """
+    connection_id = _discord_connection["id"]
+    if not connection_id:
+        log.warning("discord_dm_skipped", reason="no_discord_connection")
+        return "failed", None
+
+    # Diagnostic logging: capture the exact outbound request and the FULL
+    # raw response/error -- not just whether we internally called it
+    # confirmed/unconfirmed -- so a DM that never actually lands on Discord's
+    # side (permissions, recipient privacy settings, etc.) is distinguishable
+    # from a parsing/detection bug in this module.
+    log.info(
+        "discord_dm_initiate_request",
+        connection_id=connection_id,
+        recipient=discord_user_id,
+        text=text,
+    )
+    try:
+        result = client.initiate(connection_id, recipient=discord_user_id, text=text)
+    except CommError as exc:
+        log.warning(
+            "discord_dm_initiate_error",
+            connection_id=connection_id,
+            recipient=discord_user_id,
+            status_code=exc.status_code,
+            detail=exc.detail,
+        )
+        return "failed", None
+    except Exception:
+        log.warning(
+            "discord_dm_initiate_error",
+            connection_id=connection_id,
+            recipient=discord_user_id,
+            status_code=None,
+            detail=None,
+            exc_info=True,
+        )
+        return "failed", None
+
+    log.info(
+        "discord_dm_initiate_response",
+        connection_id=connection_id,
+        recipient=discord_user_id,
+        raw_response=result,
+    )
+
+    external_conversation_id = None
+    if isinstance(result, dict):
+        # Mirrors agent2.py's `_email_connection_id`, which relies on this
+        # same "connection_id" key on `connect_email()`'s response for the
+        # same reason: both channels go through the SDK's shared `_connect`/
+        # `initiate` machinery, so the response shape should match. `id` is
+        # kept as a fallback since `_connect()`'s own internal code (see the
+        # installed SDK) addresses connections by an `id` key.
+        external_conversation_id = result.get("conversation_id") or result.get("id")
+
+    if not external_conversation_id:
+        log.warning(
+            "discord_dm_status_unconfirmed",
+            detail="initiate() response had no recognizable conversation id",
+            raw_response=result,
+        )
+        return "unconfirmed", None
+    return "confirmed", external_conversation_id
+
+
+def _resolve_discord_candidate(message: Message) -> tuple[int, int, bool] | None:
+    """Returns (candidate_id, conversation_id, is_dm) if this Discord sender
+    is already linked to a candidate, else None.
+
+    `is_dm` tells the caller whether THIS inbound message is safe to use for
+    screening content: True only if it arrived on the candidate's known
+    private DM conversation with the bot -- one we positively confirmed via
+    `client.initiate()`'s own response (see `_open_discord_dm`), never
+    inferred from timing. Anything else -- e.g. a message in a shared server
+    channel, or a reply to a DM invite whose delivery we couldn't confirm --
+    is never treated as safe, even though the candidate is fully resolved
+    (fail-closed; see module docstring).
+    """
     # caspian_sdk's Discord `sender` carries Caspian's own stable per-user
     # identifier under "address" (e.g. "powerful_flamingo_41530") -- there is
     # no "id" key on this payload.
@@ -100,11 +238,21 @@ def _resolve_discord_candidate(message: Message) -> tuple[int, int] | None:
     candidate = db.find_candidate_by_discord_user_id(discord_user_id)
     if candidate is None:
         return None
+    candidate_id = candidate["id"]
 
+    dm_conversation = db.find_discord_dm_conversation(candidate_id)
+    if dm_conversation is not None:
+        is_dm = dm_conversation["external_conversation_id"] == message.conversation_id
+        return candidate_id, dm_conversation["id"], is_dm
+
+    # Resolvable, but no confirmed DM conversation is on file -- some other
+    # (public, or unconfirmed-DM) conversation. Still track it so we don't
+    # keep re-creating rows for it, but never treat it as safe for screening
+    # content.
     conversation_id = db.create_conversation(
-        candidate["id"], "discord", message.conversation_id
+        candidate_id, "discord", message.conversation_id, is_dm=False
     )
-    return candidate["id"], conversation_id
+    return candidate_id, conversation_id, False
 
 
 def _try_link_discord_candidate(message: Message) -> int | None:
@@ -135,6 +283,20 @@ def _handle_discord(message: Message) -> None:
         linked_candidate_id = _try_link_discord_candidate(message)
         if linked_candidate_id is not None:
             conv_log.info("discord_candidate_linked", candidate_id=linked_candidate_id)
+            discord_user_id = (message.sender or {}).get("address")
+            # Pivot to DMs the moment we learn who this is -- this is the
+            # earliest point this code can act (see module docstring: there
+            # is no join-time hook to act any earlier). Only record it as a
+            # DM if `initiate()` positively confirms it -- an unconfirmed or
+            # failed invite records nothing (fail-closed).
+            if discord_user_id:
+                dm_status, external_conversation_id = _open_discord_dm(
+                    message._client, discord_user_id, screening.LINKED_MESSAGE
+                )
+                if dm_status == "confirmed":
+                    db.create_conversation(
+                        linked_candidate_id, "discord", external_conversation_id, is_dm=True
+                    )
             message.reply(text=screening.LINKED_MESSAGE)
             return
         # No candidate/conversation to attach this message to -- can't persist
@@ -143,17 +305,31 @@ def _handle_discord(message: Message) -> None:
         conv_log.warning("discord_candidate_unresolved")
         message.reply(text=screening.UNRECOGNIZED_MESSAGE)
         return
-    candidate_id, conversation_id = resolved
+    candidate_id, conversation_id, is_dm = resolved
     conv_log = conv_log.bind(candidate_id=candidate_id)
 
     storage.save_message(conversation_id, "inbound", message.text or "")
 
     stage = db.get_pipeline_stage(candidate_id)
     if stage != "screening_assigned":
+        # Generic, non-candidate-specific content -- safe to send wherever
+        # this message came from, DM or not.
         conv_log.info("discord_holding_reply", stage=stage)
         message.reply(text=screening.HOLDING_MESSAGE)
         storage.save_message(
             conversation_id, "outbound", screening.HOLDING_MESSAGE, kind="holding"
+        )
+        return
+
+    if not is_dm:
+        # Screening has been assigned, but this message didn't arrive on the
+        # candidate's DM -- never leak the actual question/answer exchange
+        # into whatever channel this is. This reply is generic/non-revealing
+        # by construction, so it's fine to send wherever this came from.
+        conv_log.info("discord_public_message_redirected")
+        message.reply(text=screening.DM_REDIRECT_MESSAGE)
+        storage.save_message(
+            conversation_id, "outbound", screening.DM_REDIRECT_MESSAGE, kind="dm_redirect"
         )
         return
 
@@ -177,6 +353,66 @@ def _handle_discord(message: Message) -> None:
         db.set_pipeline_stage(candidate_id, "screening_completed")
         conv_log.info("screening_sequence_complete")
         agent2.notify_screening_completed(message._client, candidate_id)
+
+
+def start_discord_screening(client: CommClient, candidate_id: int) -> dict:
+    """Proactively DM a candidate the first screening question over Discord,
+    the moment HR assigns screening -- called from the dashboard's
+    assign-screening action (services/backend/src/routes/dashboard.py) via
+    this module's `start_discord_screening` MCP tool (src/server.py).
+
+    Best-effort by design: returns a status dict rather than raising, since
+    HR has already committed the pipeline stage change by the time this
+    runs, and a missing Discord link or a channel hiccup must never surface
+    as a dashboard error. If the candidate hasn't linked Discord yet, the
+    invite simply goes out later, the moment they do (see
+    `_try_link_discord_candidate`).
+    """
+    invite_log = log.bind(candidate_id=candidate_id)
+
+    candidate = db.get_candidate(candidate_id)
+    if candidate is None:
+        return {"status": "candidate_not_found"}
+
+    discord_user_id = db.get_candidate_discord_user_id(candidate_id)
+    if not discord_user_id:
+        invite_log.info("discord_screening_invite_skipped", reason="not_linked")
+        return {"status": "not_linked"}
+
+    config = load_job_agent_config(candidate["job_posting_id"])
+    questions = config.screening_questions if config else []
+    turn = screening.next_screening_turn(questions, 0)
+
+    dm_conversation = db.find_discord_dm_conversation(candidate_id)
+    if dm_conversation is not None:
+        # Already have a confirmed DM on file (e.g. from linking earlier) --
+        # send into it directly rather than opening a second one.
+        try:
+            client.send_message(dm_conversation["external_conversation_id"], text=turn.reply_text)
+        except Exception:  # noqa: BLE001 -- best-effort by design, see docstring
+            invite_log.warning("discord_screening_invite_failed", exc_info=True)
+            return {"status": "dm_send_failed"}
+        conversation_id = dm_conversation["id"]
+    else:
+        dm_status, external_conversation_id = _open_discord_dm(
+            client, discord_user_id, turn.reply_text
+        )
+        if dm_status != "confirmed":
+            # Fail closed (see module docstring): if we can't positively
+            # confirm the DM, we don't record a conversation for it, and no
+            # further automated screening content will go out until one
+            # arrives on a conversation we've explicitly confirmed.
+            invite_log.info("discord_screening_invite_not_confirmed", status=dm_status)
+            return {
+                "status": "dm_send_failed" if dm_status == "failed" else "dm_status_unconfirmed"
+            }
+        conversation_id = db.create_conversation(
+            candidate_id, "discord", external_conversation_id, is_dm=True
+        )
+
+    storage.save_message(conversation_id, "outbound", turn.reply_text, kind=turn.kind)
+    invite_log.info("discord_screening_invite_sent")
+    return {"status": "sent"}
 
 
 def handle_message(message: Message) -> None:
@@ -209,12 +445,18 @@ def register(client: CommClient) -> None:
     if discord_bot_token:
         status.set_channel("discord", "connecting")
         try:
-            client.connect_discord(bot_token=discord_bot_token)
+            connection = client.connect_discord(bot_token=discord_bot_token)
         except Exception:
             log.warning("discord_connect_failed", exc_info=True)
             status.set_channel("discord", "disconnected")
         else:
             status.set_channel("discord", "connected")
+            # The connection resource returned by `_connect()` (verified
+            # directly against the live gateway) keys the connection's own
+            # id as `"id"`, not `"connection_id"` -- e.g.
+            # {"id": "conn_...", "channel": "discord", "status": "active", ...}.
+            # There is no `"connection_id"` key on this response at all.
+            _discord_connection["id"] = connection.get("id")
     else:
         log.warning("discord_not_configured", detail="DISCORD_BOT_TOKEN is not set")
         status.set_channel("discord", "disconnected")

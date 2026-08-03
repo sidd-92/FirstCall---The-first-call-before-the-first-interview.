@@ -25,6 +25,11 @@ LINKED_MESSAGE = (
     "You're linked! We'll follow up here once there's an update on your application."
 )
 
+DM_REDIRECT_MESSAGE = (
+    "Check your Discord DMs -- that's where we follow up on applications, "
+    "never in this channel."
+)
+
 SEQUENCE_COMPLETE_MESSAGE = (
     "Thanks, that's everything for now -- our team will review your responses "
     "and follow up soon."

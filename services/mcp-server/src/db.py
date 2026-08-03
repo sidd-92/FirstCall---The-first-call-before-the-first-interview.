@@ -16,6 +16,7 @@ import os
 from datetime import UTC, datetime
 
 from sqlalchemy import (
+    Boolean,
     Column,
     DateTime,
     ForeignKey,
@@ -85,6 +86,11 @@ conversations = Table(
     Column("candidate_id", Integer, ForeignKey("candidates.id")),
     Column("channel", String),
     Column("external_conversation_id", String),
+    # True only for a conversation we know is a private DM between the bot
+    # and the candidate. See src/agents/agent1.py's is_dm routing -- it never
+    # sends or continues screening content on a conversation where this is
+    # False.
+    Column("is_dm", Boolean),
     Column("created_at", DateTime),
 )
 
@@ -133,6 +139,13 @@ def find_candidate_by_discord_user_id(discord_user_id: str) -> dict | None:
     with engine.connect() as conn:
         row = conn.execute(stmt).first()
     return row._asdict() if row else None
+
+
+def get_candidate_discord_user_id(candidate_id: int) -> str | None:
+    stmt = select(candidates.c.discord_user_id).where(candidates.c.id == candidate_id)
+    with engine.connect() as conn:
+        row = conn.execute(stmt).first()
+    return row.discord_user_id if row else None
 
 
 def find_candidate_by_discord_link_code(code: str) -> dict | None:
@@ -213,11 +226,28 @@ def find_conversation_by_external_id(external_conversation_id: str) -> dict | No
     return row._asdict() if row else None
 
 
-def create_conversation(candidate_id: int, channel: str, external_conversation_id: str) -> int:
+def find_discord_dm_conversation(candidate_id: int) -> dict | None:
+    """The candidate's private Discord DM conversation with the bot, if one
+    has been established -- never a public/guild conversation, even if the
+    candidate also has one of those on file."""
+    stmt = select(conversations.c.id, conversations.c.external_conversation_id).where(
+        conversations.c.candidate_id == candidate_id,
+        conversations.c.channel == "discord",
+        conversations.c.is_dm.is_(True),
+    )
+    with engine.connect() as conn:
+        row = conn.execute(stmt).first()
+    return row._asdict() if row else None
+
+
+def create_conversation(
+    candidate_id: int, channel: str, external_conversation_id: str, is_dm: bool = False
+) -> int:
     stmt = insert(conversations).values(
         candidate_id=candidate_id,
         channel=channel,
         external_conversation_id=external_conversation_id,
+        is_dm=is_dm,
         created_at=_utcnow(),
     )
     with engine.begin() as conn:

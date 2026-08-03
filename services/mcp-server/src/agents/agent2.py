@@ -25,7 +25,12 @@ log = get_logger()
 @lru_cache(maxsize=1)
 def _email_connection_id(client: CommClient) -> str:
     result = client.connect_email()
-    return result["connection_id"]
+    # The connection resource returned by `_connect()` (verified directly
+    # against the live gateway) keys the connection's own id as `"id"`, not
+    # `"connection_id"` -- there is no `"connection_id"` key on this
+    # response at all. Using the wrong key here previously raised a
+    # KeyError on every call, silently swallowed by the broad except below.
+    return result["id"]
 
 
 def notify_screening_completed(client: CommClient, candidate_id: int) -> None:
@@ -45,7 +50,7 @@ def notify_screening_completed(client: CommClient, candidate_id: int) -> None:
 
     try:
         connection_id = _email_connection_id(client)
-        client.initiate(
+        result = client.initiate(
             connection_id,
             recipient=business["owner_email"],
             text=(
@@ -53,6 +58,6 @@ def notify_screening_completed(client: CommClient, candidate_id: int) -> None:
                 "Review the transcript and screen with AI in the FirstCall dashboard."
             ),
         )
-        notify_log.info("notification_sent")
+        notify_log.info("notification_sent", raw_response=result)
     except Exception:  # noqa: BLE001 -- best-effort by design, see docstring
         notify_log.warning("notification_failed", exc_info=True)

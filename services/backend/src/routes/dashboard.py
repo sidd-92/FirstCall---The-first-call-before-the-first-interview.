@@ -11,6 +11,7 @@ Candidate reads and lifecycle transitions are recorded in the append-only
 AuditLogEntry table (actor = the verified Auth0 `sub`).
 """
 
+import asyncio
 import json
 import os
 
@@ -374,6 +375,21 @@ def get_candidate(
     }
 
 
+def _notify_mcp_screening_assigned(candidate_id: int) -> None:
+    """Best-effort: ask mcp-server to proactively DM the candidate the first
+    screening question over Discord (never a public channel -- see Agent 1's
+    is_dm routing). The stage change has already been committed by the time
+    this runs, so a failure here (mcp-server down, candidate hasn't linked
+    Discord yet, ...) must never fail the assign-screening request -- the DM
+    just goes out later, whenever the candidate next messages the bot."""
+    try:
+        asyncio.run(
+            mcp_client.call_tool("start_discord_screening", {"candidate_id": candidate_id})
+        )
+    except Exception:
+        log.warning("discord_screening_invite_failed", candidate_id=candidate_id, exc_info=True)
+
+
 @router.post("/candidates/{candidate_id}/assign-screening")
 def assign_screening(
     candidate_id: int,
@@ -389,6 +405,7 @@ def assign_screening(
     db.commit()
 
     log.info("screening_assigned", candidate_id=candidate_id, business_id=business_id)
+    _notify_mcp_screening_assigned(candidate_id)
     return {"stage": "screening_assigned"}
 
 

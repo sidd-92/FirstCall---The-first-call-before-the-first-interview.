@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 load_dotenv()
 
@@ -24,6 +26,17 @@ async def lifespan(app: FastAPI):
     # TODO: replace create_all with Alembic migrations once the schema
     # stabilizes -- fine for hackathon/SQLite bring-up for now.
     Base.metadata.create_all(bind=engine)
+    # create_all() only creates missing tables, never adds columns to ones
+    # that already exist -- a hand-rolled, idempotent patch for columns added
+    # after a dev DB file was first created. Same hackathon-grade tradeoff as
+    # create_all() above; drop once real migrations land.
+    with engine.begin() as conn:
+        try:
+            conn.execute(
+                text("ALTER TABLE conversations ADD COLUMN is_dm BOOLEAN NOT NULL DEFAULT 0")
+            )
+        except OperationalError:
+            pass  # column already exists
     log.info("backend_starting")
     yield
 

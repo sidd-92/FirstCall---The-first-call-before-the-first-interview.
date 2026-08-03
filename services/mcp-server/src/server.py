@@ -13,6 +13,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from src import status, storage
+from src.agents import agent1
 from src.agents.agent1 import register as register_agent1
 from src.caspian_client import CaspianClient
 from src.logging_config import configure_logging, get_logger
@@ -91,6 +92,19 @@ def initiate(connection_id: str, recipient: str, text: str) -> dict:
     and the recipient address (e.g. an email address, or a Discord user id)
     directly. Requires Capability.INITIATE on the connection."""
     return caspian.initiate(connection_id, recipient, text)
+
+
+@mcp.tool()
+def start_discord_screening(candidate_id: int) -> dict:
+    """Proactively DM a candidate the first screening question over Discord
+    -- never posts in a public/shared channel. Called by the dashboard the
+    moment HR assigns screening for a candidate (see
+    services/backend/src/routes/dashboard.py's assign-screening route).
+    Best-effort: returns a status dict ("sent" / "not_linked" /
+    "dm_send_failed" / "candidate_not_found") rather than raising, since a
+    missing Discord link must never surface as a dashboard error -- the
+    invite just goes out later, once the candidate links their account."""
+    return agent1.start_discord_screening(caspian.raw_client, candidate_id)
 
 
 @mcp.tool()

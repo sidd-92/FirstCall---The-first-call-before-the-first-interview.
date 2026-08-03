@@ -56,6 +56,7 @@ CREATE TABLE conversations (
     candidate_id INTEGER REFERENCES candidates(id),
     channel VARCHAR,
     external_conversation_id VARCHAR UNIQUE,
+    is_dm BOOLEAN,
     created_at DATETIME
 );
 
@@ -173,19 +174,22 @@ def seed_conversation(
     candidate_id: int = 1,
     channel: str = "email",
     external_conversation_id: str = "ext-conv-1",
+    is_dm: bool = False,
 ) -> None:
     with db_module.engine.begin() as conn:
         conn.execute(
             text(
                 "INSERT INTO conversations "
-                "(id, candidate_id, channel, external_conversation_id, created_at) "
-                "VALUES (:id, :candidate_id, :channel, :external_conversation_id, datetime('now'))"
+                "(id, candidate_id, channel, external_conversation_id, is_dm, created_at) "
+                "VALUES (:id, :candidate_id, :channel, :external_conversation_id, :is_dm, "
+                "datetime('now'))"
             ),
             {
                 "id": conversation_id,
                 "candidate_id": candidate_id,
                 "channel": channel,
                 "external_conversation_id": external_conversation_id,
+                "is_dm": is_dm,
             },
         )
 

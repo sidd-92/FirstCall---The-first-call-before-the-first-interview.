@@ -96,7 +96,7 @@ def test_status_requires_auth() -> None:
 # -- tools/list -------------------------------------------------------------
 
 
-def test_tools_list_returns_the_seven_real_tools(mcp_test_server, monkeypatch):
+def test_tools_list_returns_the_eight_real_tools(mcp_test_server, monkeypatch):
     base_url, _ = mcp_test_server
     monkeypatch.setattr(mcp_client, "MCP_SERVER_URL", f"{base_url}/mcp")
     _authorize()
@@ -112,6 +112,7 @@ def test_tools_list_returns_the_seven_real_tools(mcp_test_server, monkeypatch):
         "send_message",
         "reply",
         "initiate",
+        "start_discord_screening",
         "get_new_messages",
         "get_conversation",
     }

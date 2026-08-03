@@ -31,7 +31,12 @@ def _client() -> CommClient:
 @lru_cache(maxsize=1)
 def _email_connection_id() -> str:
     result = _client().connect_email()
-    return result["connection_id"]
+    # The connection resource returned by `_connect()` (verified directly
+    # against the live gateway) keys the connection's own id as `"id"`, not
+    # `"connection_id"` -- there is no `"connection_id"` key on this
+    # response at all. Using the wrong key here previously raised a
+    # KeyError on every call, silently swallowed by the broad except below.
+    return result["id"]
 
 
 def notify_new_application(
@@ -52,7 +57,7 @@ def notify_new_application(
             return
 
         connection_id = _email_connection_id()
-        _client().initiate(
+        result = _client().initiate(
             connection_id,
             recipient=business.owner_email,
             text=(
@@ -60,7 +65,9 @@ def notify_new_application(
                 f"'{job_posting.title}'. Review it in the FirstCall dashboard."
             ),
         )
-        notify_log.info("notification_sent", notification_type="new_application")
+        notify_log.info(
+            "notification_sent", notification_type="new_application", raw_response=result
+        )
     except Exception:  # noqa: BLE001 -- best-effort by design, see docstring
         notify_log.warning(
             "notification_failed", notification_type="new_application", exc_info=True

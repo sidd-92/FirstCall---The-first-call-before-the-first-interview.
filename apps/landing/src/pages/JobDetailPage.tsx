@@ -17,6 +17,7 @@ export function JobDetailPage() {
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [discordCodeCopied, setDiscordCodeCopied] = useState(false)
   const discordInviteUrl = import.meta.env.VITE_DISCORD_INVITE_URL as string | undefined
 
   useEffect(() => {
@@ -64,6 +65,25 @@ export function JobDetailPage() {
     setTimeout(() => setCopied(false), 2000)
   }
 
+  async function handleCopyDiscordCode() {
+    if (!discordLinkCode) return
+    await navigator.clipboard.writeText(discordLinkCode)
+    setDiscordCodeCopied(true)
+    setTimeout(() => setDiscordCodeCopied(false), 2000)
+  }
+
+  async function handleJoinDiscord() {
+    if (!discordLinkCode) return
+    // Copy first so the code is on the clipboard the instant the new tab
+    // opens -- the candidate can paste it into the bot DM right away.
+    await navigator.clipboard.writeText(discordLinkCode)
+    setDiscordCodeCopied(true)
+    setTimeout(() => setDiscordCodeCopied(false), 2000)
+    if (discordInviteUrl) {
+      window.open(discordInviteUrl, '_blank', 'noreferrer')
+    }
+  }
+
   if (error) {
     return (
       <main className="mx-auto max-w-2xl px-4 py-12">
@@ -106,29 +126,31 @@ export function JobDetailPage() {
             </Button>
 
             {discordLinkCode && (
-              <div className="flex flex-col gap-2 rounded-md border p-4">
+              <div className="flex flex-col gap-3 rounded-md border p-4">
                 <p className="text-sm font-medium">Get updates over Discord (optional)</p>
                 <p className="text-sm text-muted-foreground">
-                  {discordInviteUrl ? (
-                    <>
-                      Join{' '}
-                      <a
-                        href={discordInviteUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-primary underline-offset-4 hover:underline"
-                      >
-                        our Discord server
-                      </a>{' '}
-                      and DM the bot the code below to connect your application.
-                    </>
-                  ) : (
-                    <>DM our Discord bot the code below to connect your application.</>
-                  )}
+                  {discordInviteUrl
+                    ? 'Join our Discord server and DM the bot the code below to connect your application.'
+                    : 'DM our Discord bot the code below to connect your application.'}
                 </p>
-                <code className="w-fit rounded bg-muted px-3 py-1.5 font-mono text-lg tracking-widest">
-                  {discordLinkCode}
-                </code>
+                <div className="flex flex-wrap items-center gap-3">
+                  <code className="w-fit rounded bg-muted px-3 py-1.5 font-mono text-lg tracking-widest">
+                    {discordLinkCode}
+                  </code>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleCopyDiscordCode}
+                    type="button"
+                  >
+                    {discordCodeCopied ? 'Copied!' : 'Copy code'}
+                  </Button>
+                </div>
+                {discordInviteUrl && (
+                  <Button onClick={handleJoinDiscord} type="button" className="w-fit">
+                    {discordCodeCopied ? 'Code copied -- opening Discord...' : 'Join Discord Server'}
+                  </Button>
+                )}
               </div>
             )}
           </CardContent>

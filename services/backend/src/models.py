@@ -134,6 +134,11 @@ class Conversation(Base):
     external_conversation_id: Mapped[str | None] = mapped_column(
         String, nullable=True, unique=True, index=True
     )
+    # True only for a conversation we know is a private DM between the bot
+    # and the candidate (never a shared/public channel). Agent 1 refuses to
+    # send or continue screening content on any conversation where this is
+    # False -- see services/mcp-server/src/agents/agent1.py's is_dm routing.
+    is_dm: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
 
     candidate: Mapped["Candidate"] = relationship(back_populates="conversations")
