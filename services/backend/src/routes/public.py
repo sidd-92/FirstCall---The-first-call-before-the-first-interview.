@@ -5,6 +5,7 @@ here that isn't meant to be public (e.g. no candidate PII from other
 applicants, no internal pipeline state).
 """
 
+import asyncio
 import json
 import os
 import secrets
@@ -14,6 +15,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
+from src import mcp_client
 from src.db import get_db
 from src.logging_config import get_logger
 from src.models import Business, Candidate, JobPosting, PipelineStage, PipelineStageName
@@ -34,6 +36,74 @@ def _generate_discord_link_code() -> str:
 router = APIRouter(tags=["public"])
 
 RESUME_STORAGE_DIR = os.environ.get("RESUME_STORAGE_DIR", "./resumes")
+# Backend-side equivalents of the landing page's VITE_AGENT_EMAIL_ADDRESS /
+# VITE_DISCORD_INVITE_URL (see apps/landing/.env.example) -- needed here so
+# the confirmation email can carry the same info as the one-time confirmation
+# screen. AGENT_EMAIL_ADDRESS should match VITE_AGENT_EMAIL_ADDRESS.
+AGENT_EMAIL_ADDRESS = os.environ.get("AGENT_EMAIL_ADDRESS", "")
+DISCORD_INVITE_URL = os.environ.get("DISCORD_INVITE_URL", "")
+
+
+def _tool_result_to_dict(result) -> dict:
+    if isinstance(result.structured_content, dict):
+        return result.structured_content
+    return json.loads(result.content[0].text)
+
+
+def _application_confirmation_text(candidate: Candidate, job_posting: JobPosting) -> str:
+    """Mirrors what's shown on the landing page's one-time confirmation
+    screen (JobDetailPage.tsx) -- this email is the candidate's permanent,
+    searchable copy of that screen, since there's no candidate login/"my
+    applications" page by design."""
+    lines = [
+        f"Hi {candidate.name},",
+        "",
+        f'Thanks for applying to "{job_posting.title}". Your application has been received.',
+        "",
+        "You can also reach out directly by email:",
+        AGENT_EMAIL_ADDRESS or "(application email not configured)",
+    ]
+    lines += [
+        "",
+        "Get updates over Discord (optional): DM our Discord bot the code "
+        f"below to connect your application: {candidate.discord_link_code}",
+    ]
+    if DISCORD_INVITE_URL:
+        lines.append(f"Join our Discord server: {DISCORD_INVITE_URL}")
+    return "\n".join(lines)
+
+
+async def _send_application_confirmation_email(
+    candidate: Candidate, job_posting: JobPosting
+) -> None:
+    """Goes through mcp-server's own tools (connect_channel/initiate, both
+    backed by caspian_client there) -- the same path the interview
+    confirmation email (routes/dashboard.py) uses, not a separate ad hoc
+    email integration."""
+    connection = _tool_result_to_dict(
+        await mcp_client.call_tool("connect_channel", {"channel": "email"})
+    )
+    await mcp_client.call_tool(
+        "initiate",
+        {
+            "connection_id": connection["id"],
+            "recipient": candidate.email,
+            "text": _application_confirmation_text(candidate, job_posting),
+        },
+    )
+
+
+def _notify_candidate_application_received(candidate: Candidate, job_posting: JobPosting) -> None:
+    """Best-effort, mirrors dashboard.py's `_notify_candidate_interview_scheduled`:
+    the application has already been committed by the time this runs, so a
+    failure here (mcp-server down, email channel not connected, ...) must
+    never fail the apply request."""
+    try:
+        asyncio.run(_send_application_confirmation_email(candidate, job_posting))
+    except Exception:
+        log.warning(
+            "application_confirmation_email_failed", candidate_id=candidate.id, exc_info=True
+        )
 
 
 def _serialize_job_posting(job_posting: JobPosting) -> dict:
@@ -121,5 +191,6 @@ def apply_to_job(
 
     business = db.query(Business).filter(Business.id == job_posting.business_id).first()
     notify_new_application(candidate, job_posting, business)
+    _notify_candidate_application_received(candidate, job_posting)
 
     return {"id": candidate.id, "discord_link_code": candidate.discord_link_code}

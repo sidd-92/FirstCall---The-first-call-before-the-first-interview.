@@ -1,6 +1,7 @@
 import type {
+  AdminBusiness,
   Business,
-  BusinessOnboard,
+  BusinessUpdate,
   CandidateDetail,
   CandidateSummary,
   JobPostingConfigUpdate,
@@ -10,6 +11,8 @@ import type {
   McpStatus,
   McpTool,
   McpToolCallResult,
+  RequestAccessResult,
+  ScheduleInterviewRequest,
   UpcomingInterview,
 } from '@/lib/types'
 
@@ -60,6 +63,18 @@ export function listUpcomingInterviews(token: string): Promise<UpcomingInterview
   return request(token, '/interviews')
 }
 
+export function scheduleInterview(
+  token: string,
+  id: string,
+  payload: ScheduleInterviewRequest,
+): Promise<{ stage: string; scheduled_at: string; interview_notes: string | null }> {
+  return request(token, `/candidates/${id}/schedule-interview`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
 export function createJobPosting(
   token: string,
   payload: JobPostingCreate,
@@ -91,16 +106,32 @@ export function updateJobPostingConfig(
   })
 }
 
-export function listBusinesses(token: string): Promise<Business[]> {
-  return request(token, '/businesses')
+export function getMyBusiness(token: string): Promise<Business> {
+  return request(token, '/business/me')
 }
 
-export function onboardBusiness(token: string, payload: BusinessOnboard): Promise<Business> {
-  return request(token, '/businesses/onboard', {
-    method: 'POST',
+export function updateMyBusiness(token: string, payload: BusinessUpdate): Promise<Business> {
+  return request(token, '/business/me', {
+    method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   })
+}
+
+export function requestBusinessAccess(token: string): Promise<RequestAccessResult> {
+  return request(token, '/business/request-access', { method: 'POST' })
+}
+
+export function adminListBusinesses(
+  token: string,
+  status?: string,
+): Promise<AdminBusiness[]> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : ''
+  return request(token, `/admin/businesses${query}`)
+}
+
+export function adminApproveBusiness(token: string, id: number): Promise<AdminBusiness> {
+  return request(token, `/admin/businesses/${id}/approve`, { method: 'POST' })
 }
 
 export function getMcpServerStatus(token: string): Promise<McpStatus> {

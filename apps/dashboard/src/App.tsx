@@ -7,8 +7,8 @@ import { InterviewsPage } from '@/pages/InterviewsPage'
 import { PostJobPage } from '@/pages/PostJobPage'
 import { JobPostingsPage } from '@/pages/JobPostingsPage'
 import { JobPostingDetailPage } from '@/pages/JobPostingDetailPage'
-import { BusinessesPage } from '@/pages/BusinessesPage'
 import { McpServerPage } from '@/pages/McpServerPage'
+import { AdminPage } from '@/pages/AdminPage'
 
 const ProtectedCandidatePipelinePage = withProtection(CandidatePipelinePage)
 const ProtectedCandidateDetailPage = withProtection(CandidateDetailPage)
@@ -16,8 +16,8 @@ const ProtectedInterviewsPage = withProtection(InterviewsPage)
 const ProtectedPostJobPage = withProtection(PostJobPage)
 const ProtectedJobPostingsPage = withProtection(JobPostingsPage)
 const ProtectedJobPostingDetailPage = withProtection(JobPostingDetailPage)
-const ProtectedBusinessesPage = withProtection(BusinessesPage)
 const ProtectedMcpServerPage = withProtection(McpServerPage)
+const ProtectedAdminPage = withProtection(AdminPage)
 
 function App() {
   return (
@@ -30,8 +30,8 @@ function App() {
           <Route path="/jobs" element={<ProtectedJobPostingsPage />} />
           <Route path="/jobs/new" element={<ProtectedPostJobPage />} />
           <Route path="/jobs/:id" element={<ProtectedJobPostingDetailPage />} />
-          <Route path="/businesses" element={<ProtectedBusinessesPage />} />
           <Route path="/mcp-server" element={<ProtectedMcpServerPage />} />
+          <Route path="/admin" element={<ProtectedAdminPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

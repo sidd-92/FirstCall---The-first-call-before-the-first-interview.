@@ -6,22 +6,31 @@ review-with-ai is covered here since it's implemented.
 """
 
 import json
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
 import src.routes.dashboard as dashboard_routes
-from src.auth import get_current_actor_and_business, get_current_business
+from src import mcp_client
+from src.auth import (
+    get_current_actor_and_business,
+    get_current_business,
+    require_active_business,
+)
 from src.crypto import _fernet
 from src.main import app
 from src.models import (
     Business,
+    BusinessStatus,
     Candidate,
     ChannelType,
     Conversation,
     JobPosting,
     Message,
     MessageDirection,
+    PipelineStage,
+    PipelineStageName,
 )
 
 client = TestClient(app)
@@ -169,10 +178,10 @@ def _job_posting_payload(**overrides) -> dict:
 
 
 def test_create_job_posting_creates_active_posting_for_business(db_session):
-    business = Business(auth0_sub="auth0|create-job-1", name="Acme Co")
+    business = Business(auth0_sub="auth0|create-job-1", name="Acme Co", status=BusinessStatus.active)
     db_session.add(business)
     db_session.commit()
-    app.dependency_overrides[get_current_business] = lambda: business.id
+    app.dependency_overrides[require_active_business] = lambda: business
 
     response = client.post("/jobs", json=_job_posting_payload())
     assert response.status_code == 201
@@ -186,11 +195,11 @@ def test_create_job_posting_creates_active_posting_for_business(db_session):
 
 
 def test_create_job_posting_is_scoped_to_authenticated_business(db_session):
-    business_a = Business(auth0_sub="auth0|create-job-a", name="A Co")
-    business_b = Business(auth0_sub="auth0|create-job-b", name="B Co")
+    business_a = Business(auth0_sub="auth0|create-job-a", name="A Co", status=BusinessStatus.active)
+    business_b = Business(auth0_sub="auth0|create-job-b", name="B Co", status=BusinessStatus.active)
     db_session.add_all([business_a, business_b])
     db_session.commit()
-    app.dependency_overrides[get_current_business] = lambda: business_a.id
+    app.dependency_overrides[require_active_business] = lambda: business_a
 
     response = client.post("/jobs", json=_job_posting_payload())
     job_id = response.json()["id"]
@@ -357,4 +366,237 @@ def test_update_job_posting_config_requires_auth(db_session) -> None:
         f"/job-postings/{job_id}",
         json={"faq": [], "screening_questions": []},
     )
+    assert response.status_code in (401, 403)
+
+
+# -- schedule-interview / interviews ----------------------------------------
+
+
+def _seed_shortlisted_candidate(db_session, suffix: str = "a", business_id: int | None = None) -> tuple[int, int]:
+    """Returns (business_id, candidate_id) for a candidate already
+    shortlisted. Pass an existing `business_id` to add another candidate to
+    the same business instead of creating a new one."""
+    if business_id is None:
+        business = Business(auth0_sub=f"auth0|interview-test-{suffix}", name="Acme Co")
+        db_session.add(business)
+        db_session.flush()
+        business_id = business.id
+
+    job = JobPosting(
+        business_id=business_id,
+        title="Barista",
+        description="Make coffee.",
+        faq_json="{}",
+        is_active=True,
+    )
+    db_session.add(job)
+    db_session.flush()
+
+    candidate = Candidate(
+        business_id=business_id,
+        job_posting_id=job.id,
+        name=f"Jamie Doe {suffix}",
+        email=f"jamie-{suffix}@example.com",
+        phone="555-0100",
+        address="123 Main St",
+        resume_file_path="/resumes/jamie.pdf",
+    )
+    db_session.add(candidate)
+    db_session.flush()
+
+    db_session.add(
+        PipelineStage(candidate_id=candidate.id, stage=PipelineStageName.shortlisted)
+    )
+    db_session.commit()
+
+    return business_id, candidate.id
+
+
+@pytest.fixture(autouse=True)
+def _stub_mcp_call_tool(monkeypatch):
+    """schedule-interview's confirmation email is best-effort and goes
+    through mcp_client.call_tool (connect_channel, then initiate) -- stub it
+    so these tests don't need a live mcp-server, and record calls so the
+    "goes through the mcp path" tests can assert on them."""
+    calls = []
+
+    async def fake_call_tool(name: str, arguments: dict):
+        calls.append((name, arguments))
+        if name == "connect_channel":
+            return SimpleNamespace(
+                structured_content={"id": "conn-email-1", "status": "active"}, content=[]
+            )
+        return SimpleNamespace(
+            structured_content={"id": "conv-cold-1", "status": "active"}, content=[]
+        )
+
+    monkeypatch.setattr(mcp_client, "call_tool", fake_call_tool)
+    return calls
+
+
+def test_schedule_interview_updates_stage_and_fields(db_session, _stub_mcp_call_tool):
+    business_id, candidate_id = _seed_shortlisted_candidate(db_session, suffix="1")
+    app.dependency_overrides[get_current_actor_and_business] = lambda: (
+        business_id,
+        "auth0|schedule-actor-1",
+    )
+
+    response = client.post(
+        f"/candidates/{candidate_id}/schedule-interview",
+        json={
+            "scheduled_at": "2026-09-01T15:00:00+00:00",
+            "interview_notes": "Google Meet link: meet.example/abc",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["stage"] == "interview_scheduled"
+
+    stage = (
+        db_session.query(PipelineStage)
+        .filter(PipelineStage.candidate_id == candidate_id)
+        .first()
+    )
+    assert stage.stage == PipelineStageName.interview_scheduled
+    assert stage.scheduled_at.strftime("%Y-%m-%dT%H:%M:%S") == "2026-09-01T15:00:00"
+    assert stage.interview_notes == "Google Meet link: meet.example/abc"
+
+
+def test_schedule_interview_sends_confirmation_via_mcp_tools(db_session, _stub_mcp_call_tool):
+    business_id, candidate_id = _seed_shortlisted_candidate(db_session, suffix="2")
+    app.dependency_overrides[get_current_actor_and_business] = lambda: (
+        business_id,
+        "auth0|schedule-actor-2",
+    )
+
+    client.post(
+        f"/candidates/{candidate_id}/schedule-interview",
+        json={"scheduled_at": "2026-09-02T10:00:00+00:00"},
+    )
+
+    tool_names = [name for name, _ in _stub_mcp_call_tool]
+    assert tool_names == ["connect_channel", "initiate"]
+    connect_args = _stub_mcp_call_tool[0][1]
+    initiate_args = _stub_mcp_call_tool[1][1]
+    assert connect_args == {"channel": "email"}
+    assert initiate_args["connection_id"] == "conn-email-1"
+    assert initiate_args["recipient"] == "jamie-2@example.com"
+    assert "interview" in initiate_args["text"].lower()
+
+
+def test_schedule_interview_email_failure_does_not_fail_request(db_session, monkeypatch):
+    business_id, candidate_id = _seed_shortlisted_candidate(db_session, suffix="3")
+    app.dependency_overrides[get_current_actor_and_business] = lambda: (
+        business_id,
+        "auth0|schedule-actor-3",
+    )
+
+    async def failing_call_tool(name: str, arguments: dict):
+        raise RuntimeError("mcp-server unreachable")
+
+    monkeypatch.setattr(mcp_client, "call_tool", failing_call_tool)
+
+    response = client.post(
+        f"/candidates/{candidate_id}/schedule-interview",
+        json={"scheduled_at": "2026-09-03T10:00:00+00:00"},
+    )
+
+    assert response.status_code == 200
+    stage = (
+        db_session.query(PipelineStage)
+        .filter(PipelineStage.candidate_id == candidate_id)
+        .first()
+    )
+    assert stage.stage == PipelineStageName.interview_scheduled
+
+
+def test_schedule_interview_rejects_candidate_from_another_business(
+    db_session, _stub_mcp_call_tool
+):
+    business_a_id, _candidate_a_id = _seed_shortlisted_candidate(db_session, suffix="4a")
+    _business_b_id, candidate_b_id = _seed_shortlisted_candidate(db_session, suffix="4b")
+
+    app.dependency_overrides[get_current_actor_and_business] = lambda: (
+        business_a_id,
+        "auth0|schedule-actor-4",
+    )
+
+    response = client.post(
+        f"/candidates/{candidate_b_id}/schedule-interview",
+        json={"scheduled_at": "2026-09-04T10:00:00+00:00"},
+    )
+
+    assert response.status_code == 404
+    stage = (
+        db_session.query(PipelineStage)
+        .filter(PipelineStage.candidate_id == candidate_b_id)
+        .first()
+    )
+    assert stage.stage == PipelineStageName.shortlisted
+
+
+def test_schedule_interview_requires_auth() -> None:
+    response = client.post(
+        "/candidates/1/schedule-interview", json={"scheduled_at": "2026-09-01T10:00:00+00:00"}
+    )
+    assert response.status_code in (401, 403)
+
+
+def test_list_interviews_returns_only_own_business_sorted_by_scheduled_at(
+    db_session, _stub_mcp_call_tool
+):
+    business_a_id, candidate_a1 = _seed_shortlisted_candidate(db_session, suffix="5a")
+    _, candidate_a2 = _seed_shortlisted_candidate(
+        db_session, suffix="5a2", business_id=business_a_id
+    )
+    business_b_id, candidate_b1 = _seed_shortlisted_candidate(db_session, suffix="5b")
+
+    def _schedule(business_id: int, candidate_id: int, scheduled_at: str) -> None:
+        app.dependency_overrides[get_current_actor_and_business] = lambda: (
+            business_id,
+            "auth0|schedule-list-actor",
+        )
+        response = client.post(
+            f"/candidates/{candidate_id}/schedule-interview",
+            json={"scheduled_at": scheduled_at},
+        )
+        assert response.status_code == 200
+
+    _schedule(business_a_id, candidate_a1, "2026-09-10T10:00:00+00:00")
+    _schedule(business_a_id, candidate_a2, "2026-09-05T10:00:00+00:00")
+    _schedule(business_b_id, candidate_b1, "2026-09-01T10:00:00+00:00")
+
+    app.dependency_overrides[get_current_actor_and_business] = lambda: (
+        business_a_id,
+        "auth0|schedule-list-actor",
+    )
+    response = client.get("/interviews")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [entry["id"] for entry in body] == [candidate_a2, candidate_a1]
+    assert [entry["scheduled_at"][:19] for entry in body] == [
+        "2026-09-05T10:00:00",
+        "2026-09-10T10:00:00",
+    ]
+    for entry in body:
+        assert entry["job_posting_title"] == "Barista"
+    assert candidate_b1 not in [entry["id"] for entry in body]
+
+
+def test_list_interviews_excludes_candidates_not_yet_scheduled(db_session):
+    business_id, _candidate_id = _seed_shortlisted_candidate(db_session, suffix="6")
+
+    app.dependency_overrides[get_current_actor_and_business] = lambda: (
+        business_id,
+        "auth0|schedule-list-actor-2",
+    )
+    response = client.get("/interviews")
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_list_interviews_requires_auth() -> None:
+    response = client.get("/interviews")
     assert response.status_code in (401, 403)

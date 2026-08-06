@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { useAuthedApi } from '@/lib/useAuthedApi'
+import type { Business } from '@/lib/types'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -41,7 +42,7 @@ const EMPTY_FORM: JobFormState = {
 }
 
 export function PostJobPage() {
-  const { createJobPosting } = useAuthedApi()
+  const { createJobPosting, getMyBusiness, requestBusinessAccess } = useAuthedApi()
   const navigate = useNavigate()
   const [form, setForm] = useState<JobFormState>(EMPTY_FORM)
   const [submitting, setSubmitting] = useState(false)
@@ -49,6 +50,33 @@ export function PostJobPage() {
   const [showJson, setShowJson] = useState(false)
   const [jsonDraft, setJsonDraft] = useState('')
   const [jsonError, setJsonError] = useState<string | null>(null)
+
+  const [business, setBusiness] = useState<Business | null>(null)
+  const [businessError, setBusinessError] = useState<string | null>(null)
+  const [requesting, setRequesting] = useState(false)
+  const [requestError, setRequestError] = useState<string | null>(null)
+  const [requestMessage, setRequestMessage] = useState<string | null>(null)
+
+  useEffect(() => {
+    getMyBusiness()
+      .then(setBusiness)
+      .catch((err: Error) => setBusinessError(err.message))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  async function handleRequestAccess() {
+    setRequesting(true)
+    setRequestError(null)
+    try {
+      const result = await requestBusinessAccess()
+      setRequestMessage(result.message)
+      setBusiness((prev) => (prev ? { ...prev, status: result.status } : prev))
+    } catch (err) {
+      setRequestError(err instanceof Error ? err.message : 'Failed to request access.')
+    } finally {
+      setRequesting(false)
+    }
+  }
 
   function updateField(field: keyof JobFormState) {
     return (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
@@ -133,6 +161,74 @@ export function PostJobPage() {
     } finally {
       setSubmitting(false)
     }
+  }
+
+  if (businessError) {
+    return <p className="text-destructive">Failed to load your business: {businessError}</p>
+  }
+
+  if (business === null) {
+    return <p className="text-muted-foreground">Loading...</p>
+  }
+
+  if (business.status === 'unrequested') {
+    return (
+      <div className="mx-auto max-w-md">
+        <Card>
+          <CardHeader>
+            <CardTitle>Request access to post jobs</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            <p className="text-sm text-muted-foreground">
+              Posting a job puts your listing on the public job board and uses shared
+              Email/Discord infrastructure to screen candidates -- we review new
+              businesses before turning that on.
+            </p>
+            {requestMessage && <p className="text-sm">{requestMessage}</p>}
+            {requestError && <p className="text-sm text-destructive">{requestError}</p>}
+            {!requestMessage && (
+              <Button onClick={handleRequestAccess} disabled={requesting} className="w-fit">
+                {requesting ? 'Requesting...' : 'Request Access'}
+              </Button>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+
+  if (business.status === 'pending_review') {
+    return (
+      <div className="mx-auto max-w-md">
+        <Card>
+          <CardHeader>
+            <CardTitle>Access request pending</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-muted-foreground">
+              Your access request is being reviewed -- you&apos;ll be notified once approved.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+
+  if (business.status === 'suspended') {
+    return (
+      <div className="mx-auto max-w-md">
+        <Card>
+          <CardHeader>
+            <CardTitle>Access suspended</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-muted-foreground">
+              Your business access has been suspended. Contact support for help.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    )
   }
 
   return (

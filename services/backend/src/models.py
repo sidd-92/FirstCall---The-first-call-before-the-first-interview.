@@ -52,12 +52,51 @@ class PipelineStageName(str, enum.Enum):
     confirmed = "confirmed"
 
 
+class BusinessStatus(str, enum.Enum):
+    """A business's access to gated capabilities (posting jobs, MCP Server
+    tools) -- distinct from `needs_onboarding`, which is just about having a
+    real name. Self-service signup (auto-provisioning in auth.py) always
+    starts a business at "unrequested": creating an account must never by
+    itself grant access to shared, business-facing infrastructure (Email/
+    Discord channels, the public job board). "unrequested" -> "pending_review"
+    only happens via the business's own explicit POST /business/request-access
+    call; "pending_review" -> "active" only via an admin's POST
+    /admin/businesses/{id}/approve."""
+
+    unrequested = "unrequested"
+    pending_review = "pending_review"
+    active = "active"
+    suspended = "suspended"
+
+
+# Placeholder `name` given to a Business row auto-created on a verified JWT's
+# first request (see get_current_actor_and_business in auth.py). Distinct
+# from any name a real onboarding submission would plausibly use.
+PLACEHOLDER_BUSINESS_NAME = "New Business (unnamed)"
+
+
 class Business(Base):
     __tablename__ = "businesses"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     auth0_sub: Mapped[str] = mapped_column(String, unique=True, index=True)
     name: Mapped[str] = mapped_column(String)
+    # True until the business sets a real name via PATCH /business/me.
+    # Auto-created rows (get_current_actor_and_business) start True; rows
+    # created with a real name (the legacy POST /businesses/onboard route)
+    # start False. Dashboard gates on this to show the onboarding step.
+    needs_onboarding: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    # Gates access to shared infrastructure (see BusinessStatus). Every new
+    # signup -- including auto-provisioned ones -- starts "unrequested".
+    status: Mapped[BusinessStatus] = mapped_column(
+        Enum(BusinessStatus), default=BusinessStatus.unrequested, server_default="unrequested"
+    )
+    # Captured from the Auth0 JWT's "email" claim at the moment the business
+    # calls POST /business/request-access -- the admin review list
+    # (GET /admin/businesses) shows this so the admin knows who's asking,
+    # without needing a separate Auth0 Management API lookup by sub. Null
+    # until a request is made.
+    requested_by_email: Mapped[str | None] = mapped_column(String, nullable=True)
     # Where Agent 2's ops notifications (new application, screening
     # completed) get sent. Null until the business fills this in somewhere
     # (onboarding isn't built yet) -- notifications are skipped, not errored,
@@ -170,6 +209,13 @@ class PipelineStage(Base):
         ForeignKey("candidates.id"), primary_key=True
     )
     stage: Mapped[PipelineStageName] = mapped_column(Enum(PipelineStageName))
+    # Set together when HR schedules an interview (POST
+    # /candidates/{id}/schedule-interview moves `stage` to
+    # interview_scheduled at the same time). No separate Interview table --
+    # PipelineStage is already 1:1 with a candidate, so these just live here.
+    scheduled_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # Free-text, e.g. a meeting link or interviewer name. Null until scheduled.
+    interview_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(default=_utcnow, onupdate=_utcnow)
 
     candidate: Mapped["Candidate"] = relationship(back_populates="pipeline_stages")

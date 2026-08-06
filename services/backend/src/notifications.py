@@ -13,6 +13,7 @@ module only ever sends, never listens, so it doesn't need to satisfy the
 """
 
 import os
+from datetime import UTC, datetime
 from functools import lru_cache
 
 from caspian_sdk import CommClient
@@ -21,6 +22,11 @@ from src.logging_config import get_logger
 from src.models import Business, Candidate, JobPosting
 
 log = get_logger()
+
+# Single admin address for this hackathon showcase (see routes/admin.py and
+# auth.py's require_admin) -- supporting multiple admins is a future
+# enhancement, not needed now.
+PLATFORM_ADMIN_EMAIL = os.environ.get("PLATFORM_ADMIN_EMAIL", "")
 
 
 @lru_cache(maxsize=1)
@@ -72,3 +78,32 @@ def notify_new_application(
         notify_log.warning(
             "notification_failed", notification_type="new_application", exc_info=True
         )
+
+
+def notify_access_requested(business: Business, requester_email: str | None) -> None:
+    """Best-effort: notify the platform admin that a business wants its
+    self-service signup reviewed (POST /business/request-access). Same
+    CommClient/`initiate()` path as `notify_new_application` above -- not a
+    separate ad hoc email integration."""
+    notify_log = log.bind(business_id=business.id, notification_type="access_requested")
+
+    if not PLATFORM_ADMIN_EMAIL:
+        notify_log.warning("notification_skipped", reason="no_platform_admin_email")
+        return
+
+    try:
+        connection_id = _email_connection_id()
+        requested_at = datetime.now(UTC).isoformat()
+        result = _client().initiate(
+            connection_id,
+            recipient=PLATFORM_ADMIN_EMAIL,
+            text=(
+                f"New access request from '{business.name}' (business_id={business.id}). "
+                f"Requesting user: {requester_email or 'unknown'}. "
+                f"Requested at {requested_at}. "
+                "Review it in the FirstCall admin panel."
+            ),
+        )
+        notify_log.info("notification_sent", raw_response=result)
+    except Exception:  # noqa: BLE001 -- best-effort by design, see docstring
+        notify_log.warning("notification_failed", exc_info=True)

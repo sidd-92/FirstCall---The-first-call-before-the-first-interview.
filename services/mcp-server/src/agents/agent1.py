@@ -20,25 +20,37 @@ default (see caspian_sdk.CommClient.install_discord's docstring) and
 -- so a naive reply-based flow leaks straight into a shared server channel.
 Every conversation this module treats as safe for screening content is
 tracked with `is_dm=True` (src/db.py's `conversations.is_dm` column, which
-*we* set -- never inferred from the inbound message). Anything else --
-including a candidate's very first message, wherever it lands -- gets at
-most a generic, non-revealing reply.
+*we* set -- never inferred from timing). Anything else -- including a
+candidate's very first message, wherever it lands -- gets at most a
+generic, non-revealing reply.
 
 This is fail-CLOSED by design: `caspian_sdk.Message` (checked directly
 against the installed 0.6.1 package) carries no field of any kind that
 distinguishes a DM from a guild/public-channel message -- no `is_dm`,
 `guild_id`, `channel_type`, or similar; `sender` is an untyped `dict | None`
 populated straight from the gateway payload, and the only key any code here
-relies on is `"address"`. So `is_dm=True` is only ever recorded when
-`client.initiate()`'s own response hands back a conversation id we can
-positively parse (see `_open_discord_dm`) -- never assumed from timing or
-"the next message after we tried to DM them." A candidate with Discord's
-"block DMs from server members" privacy setting enabled, for example, could
-make `initiate()` return successfully with a body we can't parse as
-confirmation; treating that as "probably a DM" would silently reopen the
-exact leak this module exists to close, so it doesn't -- an unconfirmed
-invite just means no further automated screening content goes out until a
-message arrives on a conversation we've explicitly confirmed.
+relies on is `"address"`. So `is_dm` is determined per-message by calling
+`client.list_messages(conversation_id)` (a real, documented SDK method that
+hits the gateway directly -- verified live: it returns each message's raw
+`chat_type` field, which the `Message` wrapper itself drops) and checking
+*that specific message's* `chat_type` (see `_is_dm_message`). `is_dm=True`
+only when the lookup positively returns `chat_type == "dm"` for this exact
+message id -- never cached, never reused from an earlier message on the
+same conversation, and never inferred from `client.initiate()` (see below).
+Any failure mode -- the lookup call raising, the message not showing up in
+the response, or a `chat_type` that's anything other than exactly `"dm"`
+(including `None`/missing) -- is treated as NOT a DM. A candidate with
+Discord's "block DMs from server members" privacy setting enabled, for
+example, could make a lookup come back ambiguous; treating that as
+"probably a DM" would silently reopen the exact leak this module exists to
+close, so it doesn't.
+
+`client.initiate()` (see `_open_discord_dm`) is still called on linking as
+a best-effort proactive nicety -- it's what actually opens/delivers a DM
+channel to the candidate -- but its response is no longer used to decide
+`is_dm` for anything. Whether `initiate()` reports "confirmed",
+"unconfirmed", or "failed" has no bearing on how any message is classified;
+only a positive `chat_type == "dm"` from `list_messages()` does.
 
 Known gap: the installed caspian-sdk (0.6.1) dispatches exactly three event
 types (message.received, interaction.received, reaction.received; see
@@ -138,16 +150,19 @@ def _open_discord_dm(
     Never raises: a failed DM must not break whatever caller triggered it
     (an inbound message handler, or the dashboard's assign-screening call).
 
+    This is purely a delivery nicety now -- it does NOT determine `is_dm`
+    for anything (see module docstring and `_is_dm_message`). Whether this
+    returns "confirmed", "unconfirmed", or "failed" has no bearing on how
+    any inbound message gets classified; only a positive `chat_type == "dm"`
+    from `client.list_messages()` does.
+
     Returns (status, external_conversation_id):
     - ("confirmed", id): `initiate()` succeeded and its response included a
-      conversation id we recognize -- safe to record as `is_dm=True` and
-      send screening content there.
+      conversation id we recognize.
     - ("unconfirmed", None): `initiate()` succeeded, but its response didn't
-      include a recognizable id. Fail CLOSED (see module docstring): the
-      message plausibly reached the candidate, but we cannot verify or
-      track it as their DM, so no automated screening content is sent
-      through this call, and no future inbound message is trusted as this
-      DM either -- there is nothing to positively match it against.
+      include a recognizable id -- the message plausibly reached the
+      candidate, but we can't identify the resulting conversation from this
+      response alone.
     - ("failed", None): no Discord connection configured, or `initiate()`
       itself raised.
     """
@@ -216,18 +231,95 @@ def _open_discord_dm(
     return "confirmed", external_conversation_id
 
 
+def _lookup_chat_type(client: CommClient, conversation_id: str, message_id: str) -> str | None:
+    """Fetch `message_id`'s `chat_type` straight from the gateway via
+    `client.list_messages(conversation_id)` -- a real, documented SDK method
+    (verified live against the actual gateway) that returns each message's
+    raw `chat_type` field, which the `Message` wrapper handed to on_message
+    handlers drops entirely (see module docstring).
+
+    Returns None -- never raises -- on any failure: a lookup error, a
+    response that isn't the expected list, or `message_id` simply not being
+    in it. Callers treat None exactly like a non-"dm" chat_type (fail
+    closed)."""
+    try:
+        raw_messages = client.list_messages(conversation_id)
+    except CommError as exc:
+        log.warning(
+            "discord_chat_type_lookup_failed",
+            conversation_id=conversation_id,
+            message_id=message_id,
+            status_code=exc.status_code,
+            detail=exc.detail,
+        )
+        return None
+    except Exception:
+        log.warning(
+            "discord_chat_type_lookup_failed",
+            conversation_id=conversation_id,
+            message_id=message_id,
+            exc_info=True,
+        )
+        return None
+
+    if not isinstance(raw_messages, list):
+        log.warning(
+            "discord_chat_type_lookup_unexpected_response",
+            conversation_id=conversation_id,
+            message_id=message_id,
+            raw_response=raw_messages,
+        )
+        return None
+
+    for raw_message in raw_messages:
+        if isinstance(raw_message, dict) and raw_message.get("id") == message_id:
+            return raw_message.get("chat_type")
+
+    log.warning(
+        "discord_chat_type_lookup_message_not_found",
+        conversation_id=conversation_id,
+        message_id=message_id,
+    )
+    return None
+
+
+def _is_dm_message(client: CommClient, message: Message) -> bool:
+    """Positively confirm THIS specific inbound message arrived on a private
+    DM, straight from the gateway's own `chat_type` field (see
+    `_lookup_chat_type`) -- never inferred from `client.initiate()` (that's
+    now only a best-effort delivery nicety; see `_open_discord_dm`) and never
+    cached or reused from an earlier message on the same conversation: every
+    message gets its own fresh lookup. Fail CLOSED (see module docstring):
+    any lookup failure or any chat_type other than exactly "dm" (including
+    missing/None) is NOT a DM."""
+    return _lookup_chat_type(client, message.conversation_id, message.id) == "dm"
+
+
+def _get_or_create_discord_conversation(candidate_id: int, message: Message, is_dm: bool) -> int:
+    """Find-or-create the conversation row for `message.conversation_id`,
+    recording this message's freshly-looked-up `is_dm`. `is_dm` is a
+    monotonic upgrade only: if a row already exists and was previously
+    False, a later message confirmed as a DM flips it to True (a channel's
+    DM-ness doesn't change, but earlier lookups can fail closed); an
+    already-True row is never downgraded by one ambiguous message."""
+    existing = db.find_conversation_by_external_id(message.conversation_id)
+    if existing is not None:
+        if is_dm and not existing["is_dm"]:
+            db.set_conversation_is_dm(existing["id"], True)
+        return existing["id"]
+    return db.create_conversation(candidate_id, "discord", message.conversation_id, is_dm=is_dm)
+
+
 def _resolve_discord_candidate(message: Message) -> tuple[int, int, bool] | None:
     """Returns (candidate_id, conversation_id, is_dm) if this Discord sender
     is already linked to a candidate, else None.
 
     `is_dm` tells the caller whether THIS inbound message is safe to use for
-    screening content: True only if it arrived on the candidate's known
-    private DM conversation with the bot -- one we positively confirmed via
-    `client.initiate()`'s own response (see `_open_discord_dm`), never
-    inferred from timing. Anything else -- e.g. a message in a shared server
-    channel, or a reply to a DM invite whose delivery we couldn't confirm --
-    is never treated as safe, even though the candidate is fully resolved
-    (fail-closed; see module docstring).
+    screening content: True only if `_is_dm_message` positively confirms
+    `chat_type == "dm"` for this exact message, straight from the gateway.
+    Anything else -- a lookup failure, a message in a shared server channel,
+    or any non-"dm" chat_type -- is never treated as safe, even though the
+    candidate is fully resolved (fail-closed; see module docstring).
     """
     # caspian_sdk's Discord `sender` carries Caspian's own stable per-user
     # identifier under "address" (e.g. "powerful_flamingo_41530") -- there is
@@ -240,19 +332,9 @@ def _resolve_discord_candidate(message: Message) -> tuple[int, int, bool] | None
         return None
     candidate_id = candidate["id"]
 
-    dm_conversation = db.find_discord_dm_conversation(candidate_id)
-    if dm_conversation is not None:
-        is_dm = dm_conversation["external_conversation_id"] == message.conversation_id
-        return candidate_id, dm_conversation["id"], is_dm
-
-    # Resolvable, but no confirmed DM conversation is on file -- some other
-    # (public, or unconfirmed-DM) conversation. Still track it so we don't
-    # keep re-creating rows for it, but never treat it as safe for screening
-    # content.
-    conversation_id = db.create_conversation(
-        candidate_id, "discord", message.conversation_id, is_dm=False
-    )
-    return candidate_id, conversation_id, False
+    is_dm = _is_dm_message(message._client, message)
+    conversation_id = _get_or_create_discord_conversation(candidate_id, message, is_dm)
+    return candidate_id, conversation_id, is_dm
 
 
 def _try_link_discord_candidate(message: Message) -> int | None:
@@ -286,18 +368,20 @@ def _handle_discord(message: Message) -> None:
             discord_user_id = (message.sender or {}).get("address")
             # Pivot to DMs the moment we learn who this is -- this is the
             # earliest point this code can act (see module docstring: there
-            # is no join-time hook to act any earlier). Only record it as a
-            # DM if `initiate()` positively confirms it -- an unconfirmed or
-            # failed invite records nothing (fail-closed).
+            # is no join-time hook to act any earlier). Best-effort only --
+            # does NOT determine is_dm (see _is_dm_message below).
             if discord_user_id:
-                dm_status, external_conversation_id = _open_discord_dm(
-                    message._client, discord_user_id, screening.LINKED_MESSAGE
-                )
-                if dm_status == "confirmed":
-                    db.create_conversation(
-                        linked_candidate_id, "discord", external_conversation_id, is_dm=True
-                    )
+                _open_discord_dm(message._client, discord_user_id, screening.LINKED_MESSAGE)
+
+            is_dm = _is_dm_message(message._client, message)
+            conversation_id = _get_or_create_discord_conversation(
+                linked_candidate_id, message, is_dm
+            )
+            storage.save_message(conversation_id, "inbound", message.text or "")
             message.reply(text=screening.LINKED_MESSAGE)
+            storage.save_message(
+                conversation_id, "outbound", screening.LINKED_MESSAGE, kind="linked"
+            )
             return
         # No candidate/conversation to attach this message to -- can't persist
         # it (conversations.candidate_id is a required FK), so we only log +

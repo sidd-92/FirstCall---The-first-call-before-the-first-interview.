@@ -19,7 +19,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 import src.routes.dashboard as dashboard_routes
-from src.auth import get_current_actor_and_business, get_current_business
+from src.auth import (
+    get_current_actor_and_business,
+    get_current_business,
+    require_active_business,
+)
 from src.crypto import _fernet
 from src.main import app
 from src.models import (
@@ -49,10 +53,14 @@ def _clear_overrides():
 def _auth_as(business_id: int, actor: str = ACTOR_A) -> None:
     """Mock JWT verification: resolve the caller to (business_id, auth0_sub).
     The token itself is never checked here -- the routes must only trust
-    whatever these dependencies return. Both variants are overridden since
-    they stand in for the same verified JWT."""
+    whatever these dependencies return. All three are overridden since they
+    stand in for the same verified JWT; require_active_business (Prompt 16's
+    access-request gating) is stubbed with an already-active business here
+    since these tests are about business_id isolation, not that gate --
+    see test_access_gating.py for the gate itself."""
     app.dependency_overrides[get_current_actor_and_business] = lambda: (business_id, actor)
     app.dependency_overrides[get_current_business] = lambda: business_id
+    app.dependency_overrides[require_active_business] = lambda: SimpleNamespace(id=business_id)
 
 
 @pytest.fixture
@@ -339,10 +347,84 @@ def test_denied_access_to_other_business_writes_no_audit_entry(db_session, busin
     assert entries == []
 
 
+def test_schedule_interview_is_scoped_to_own_business(db_session, business_set):
+    _auth_as(business_set.a_id)
+
+    assert (
+        client.post(
+            f"/candidates/{business_set.b_candidate_id}/schedule-interview",
+            json={"scheduled_at": "2026-09-01T10:00:00+00:00"},
+        ).status_code
+        == 404
+    )
+
+    response = client.post(
+        f"/candidates/{business_set.a_candidate_id}/schedule-interview",
+        json={"scheduled_at": "2026-09-01T10:00:00+00:00", "interview_notes": "Zoom link"},
+    )
+    assert response.status_code == 200
+
+    own_stage = (
+        db_session.query(PipelineStage)
+        .filter(PipelineStage.candidate_id == business_set.a_candidate_id)
+        .first()
+    )
+    assert own_stage.stage == PipelineStageName.interview_scheduled
+    assert own_stage.interview_notes == "Zoom link"
+
+    # Business B's candidate must be untouched by A's request.
+    other_stage = (
+        db_session.query(PipelineStage)
+        .filter(PipelineStage.candidate_id == business_set.b_candidate_id)
+        .first()
+    )
+    assert other_stage.stage == PipelineStageName.applied
+
+
+def test_schedule_interview_writes_audit_log_entry(db_session, business_set):
+    _auth_as(business_set.a_id)
+
+    client.post(
+        f"/candidates/{business_set.a_candidate_id}/schedule-interview",
+        json={"scheduled_at": "2026-09-01T10:00:00+00:00"},
+    )
+
+    entries = _audit_rows(db_session, business_id=business_set.a_id, action="schedule_interview")
+    assert len(entries) == 1
+    assert entries[0].actor == ACTOR_A
+    assert entries[0].target_candidate_id == business_set.a_candidate_id
+
+
+def test_list_interviews_is_scoped_to_own_business(db_session, business_set):
+    _auth_as(business_set.a_id)
+    client.post(
+        f"/candidates/{business_set.a_candidate_id}/schedule-interview",
+        json={"scheduled_at": "2026-09-01T10:00:00+00:00"},
+    )
+
+    _auth_as(business_set.b_id, actor="auth0|isolation-actor-b")
+    client.post(
+        f"/candidates/{business_set.b_candidate_id}/schedule-interview",
+        json={"scheduled_at": "2026-09-02T10:00:00+00:00"},
+    )
+
+    _auth_as(business_set.a_id)
+    response = client.get("/interviews")
+
+    assert response.status_code == 200
+    candidate_ids = [entry["id"] for entry in response.json()]
+    assert business_set.a_candidate_id in candidate_ids
+    assert business_set.b_candidate_id not in candidate_ids
+
+
 def test_dashboard_routes_require_authentication() -> None:
     assert client.get("/candidates").status_code in (401, 403)
     assert client.get("/candidates/1").status_code in (401, 403)
     assert client.post("/candidates/1/assign-screening").status_code in (401, 403)
     assert client.post("/candidates/1/shortlist").status_code in (401, 403)
     assert client.post("/candidates/1/review-with-ai").status_code in (401, 403)
+    assert client.post(
+        "/candidates/1/schedule-interview", json={"scheduled_at": "2026-09-01T10:00:00+00:00"}
+    ).status_code in (401, 403)
+    assert client.get("/interviews").status_code in (401, 403)
     assert client.post("/jobs", json={"title": "x", "description": "y"}).status_code in (401, 403)

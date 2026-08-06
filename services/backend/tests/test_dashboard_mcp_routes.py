@@ -5,17 +5,25 @@ against a live MCPServer instance running on an actual localhost socket (see
 tests/conftest.py's `mcp_test_server` fixture) -- not a mocked response
 shape. The unreachable-server case uses a real closed port, so the
 "disconnected" path is exercised by a genuine connection failure too.
+
+These routes are gated on `require_active_business` (Prompt 16): a business
+must have been reviewed and approved before it can even see whether shared
+infrastructure is connected. `_authorize()` overrides that dependency
+directly to stand in for an already-active business, since these tests are
+about the MCP proxying itself, not the access-gating logic (that's covered
+in test_access_gating.py).
 """
 
 import json
 import socket
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
 import src.routes.dashboard as dashboard_routes
 from src import mcp_client
-from src.auth import get_current_business
+from src.auth import require_active_business
 from src.main import app
 
 client = TestClient(app)
@@ -28,7 +36,7 @@ def _clear_overrides():
 
 
 def _authorize(business_id: int = 1) -> None:
-    app.dependency_overrides[get_current_business] = lambda: business_id
+    app.dependency_overrides[require_active_business] = lambda: SimpleNamespace(id=business_id)
 
 
 def _closed_port_url() -> str:

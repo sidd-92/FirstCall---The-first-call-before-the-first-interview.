@@ -5,17 +5,23 @@ import type { CandidateDetail } from '@/lib/types'
 import { StageBadge } from '@/components/StageBadge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
+import { Textarea } from '@/components/ui/textarea'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL as string
 
 export function CandidateDetailPage() {
   const { id } = useParams<{ id: string }>()
-  const { getCandidate, assignScreening, shortlistCandidate, reviewWithAi } = useAuthedApi()
+  const { getCandidate, assignScreening, shortlistCandidate, reviewWithAi, scheduleInterview } =
+    useAuthedApi()
   const [candidate, setCandidate] = useState<CandidateDetail | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [pendingAction, setPendingAction] = useState<string | null>(null)
+  const [schedulingError, setSchedulingError] = useState<string | null>(null)
+  const [scheduling, setScheduling] = useState(false)
 
   function load() {
     if (!id) return
@@ -38,6 +44,31 @@ export function CandidateDetailPage() {
       setActionError(err instanceof Error ? err.message : `Failed to ${name}.`)
     } finally {
       setPendingAction(null)
+    }
+  }
+
+  async function handleScheduleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!id) return
+    const formData = new FormData(event.currentTarget)
+    const scheduledAtLocal = String(formData.get('scheduled_at') ?? '')
+    if (!scheduledAtLocal) return
+    const notes = String(formData.get('interview_notes') ?? '').trim()
+
+    setScheduling(true)
+    setSchedulingError(null)
+    try {
+      await scheduleInterview(id, {
+        scheduled_at: new Date(scheduledAtLocal).toISOString(),
+        interview_notes: notes || null,
+      })
+      load()
+    } catch (err) {
+      setSchedulingError(
+        err instanceof Error ? err.message : 'Failed to schedule interview.',
+      )
+    } finally {
+      setScheduling(false)
     }
   }
 
@@ -123,6 +154,53 @@ export function CandidateDetailPage() {
           </CardContent>
         </Card>
       )}
+
+      {candidate.stage === 'shortlisted' && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Schedule Interview</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <form className="flex flex-col gap-4" onSubmit={handleScheduleSubmit}>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="scheduled_at">Date &amp; time</Label>
+                <Input id="scheduled_at" name="scheduled_at" type="datetime-local" required />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="interview_notes">Notes (meeting link, interviewer, ...)</Label>
+                <Textarea id="interview_notes" name="interview_notes" rows={3} />
+              </div>
+              {schedulingError && (
+                <p className="text-sm text-destructive">{schedulingError}</p>
+              )}
+              <Button type="submit" disabled={scheduling} className="w-fit">
+                {scheduling ? 'Scheduling...' : 'Schedule Interview'}
+              </Button>
+            </form>
+          </CardContent>
+        </Card>
+      )}
+
+      {(candidate.stage === 'interview_scheduled' || candidate.stage === 'confirmed') &&
+        candidate.scheduled_at && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Interview scheduled</CardTitle>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-1 text-sm">
+              <p>
+                <span className="text-muted-foreground">When: </span>
+                {new Date(candidate.scheduled_at).toLocaleString()}
+              </p>
+              {candidate.interview_notes && (
+                <p>
+                  <span className="text-muted-foreground">Notes: </span>
+                  {candidate.interview_notes}
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        )}
 
       <div className="flex flex-wrap items-center gap-3">
         <Button

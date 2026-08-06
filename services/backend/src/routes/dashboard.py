@@ -14,6 +14,7 @@ AuditLogEntry table (actor = the verified Auth0 `sub`).
 import asyncio
 import json
 import os
+from datetime import datetime
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -22,12 +23,21 @@ from sqlalchemy.orm import Session
 
 from src import mcp_client
 from src.anthropic_client import review_transcript
-from src.auth import get_current_actor_and_business, get_current_business
+from src.auth import (
+    _require_verified_email,
+    get_current_actor_and_business,
+    get_current_business,
+    get_current_business_row,
+    get_current_claims,
+    require_active_business,
+)
 from src.crypto import decrypt_content
 from src.db import get_db
 from src.logging_config import get_logger
 from src.models import (
     AuditLogEntry,
+    Business,
+    BusinessStatus,
     Candidate,
     ChannelType,
     Conversation,
@@ -36,6 +46,7 @@ from src.models import (
     PipelineStage,
     PipelineStageName,
 )
+from src.notifications import notify_access_requested
 
 log = get_logger()
 
@@ -65,6 +76,11 @@ class JobPostingCreate(BaseModel):
 class FaqEntryPayload(BaseModel):
     question: str
     answer: str
+
+
+class ScheduleInterviewRequest(BaseModel):
+    scheduled_at: datetime
+    interview_notes: str | None = None
 
 
 class JobPostingConfigUpdate(BaseModel):
@@ -125,18 +141,24 @@ def _parse_agent_config(faq_json: str) -> dict:
 
 def _set_pipeline_stage(
     db: Session, candidate_id: int, stage: PipelineStageName
-) -> None:
+) -> PipelineStage:
     pipeline_stage = (
         db.query(PipelineStage).filter(PipelineStage.candidate_id == candidate_id).first()
     )
     if pipeline_stage is None:
-        db.add(PipelineStage(candidate_id=candidate_id, stage=stage))
+        pipeline_stage = PipelineStage(candidate_id=candidate_id, stage=stage)
+        db.add(pipeline_stage)
     else:
         pipeline_stage.stage = stage
+    return pipeline_stage
 
 
 def _stage_for(candidate: Candidate) -> str | None:
     return candidate.pipeline_stages[0].stage.value if candidate.pipeline_stages else None
+
+
+def _pipeline_stage_for(candidate: Candidate) -> PipelineStage | None:
+    return candidate.pipeline_stages[0] if candidate.pipeline_stages else None
 
 
 def _serialize_candidate_summary(candidate: Candidate) -> dict:
@@ -210,15 +232,21 @@ def _screening_transcript(db: Session, candidate_id: int) -> str | None:
 @router.post("/jobs", status_code=status.HTTP_201_CREATED)
 def create_job_posting(
     payload: JobPostingCreate,
-    business_id: int = Depends(get_current_business),
+    business: Business = Depends(require_active_business),
     db: Session = Depends(get_db),
 ):
     """Create a new job posting for the authenticated business.
+
+    Gated on `require_active_business`: an unreviewed business must not be
+    able to post a real listing onto the public job board -- see
+    POST /business/request-access and the admin approval flow
+    (routes/admin.py) that eventually flips status to "active".
 
     FAQ/screening-question config (src/agents/config.py's faq_json contract)
     isn't authored through this form -- new postings start with none; use
     GET/PATCH /job-postings/{id} to add it afterward.
     """
+    business_id = business.id
     job_posting = JobPosting(
         business_id=business_id,
         title=payload.title,
@@ -238,6 +266,56 @@ def create_job_posting(
     log.info("job_posting_created", job_posting_id=job_posting.id, business_id=business_id)
 
     return {"id": job_posting.id}
+
+
+_ALREADY_REQUESTED_MESSAGES = {
+    BusinessStatus.pending_review: "Your access request is already pending review.",
+    BusinessStatus.active: "Your business already has active access.",
+    BusinessStatus.suspended: "Your business access has been suspended. Contact support.",
+}
+
+
+@router.post("/business/request-access")
+def request_business_access(
+    business: Business = Depends(get_current_business_row),
+    claims: dict = Depends(get_current_claims),
+    db: Session = Depends(get_db),
+):
+    """Explicit self-service step: an "unrequested" business asks to be
+    reviewed. Self-service signup (auth.py's auto-provisioning) never drops a
+    new business straight into the review queue -- this is the one action
+    that moves it to "pending_review" and notifies the admin, so review
+    capacity is only ever spent on businesses that actually asked for it.
+
+    Idempotent in spirit, not effect: calling this again while already
+    pending_review/active/suspended doesn't re-send a notification or error
+    ugly -- it just reports the current state back.
+    """
+    _require_verified_email(claims)
+
+    if business.status != BusinessStatus.unrequested:
+        return {
+            "status": business.status.value,
+            "message": _ALREADY_REQUESTED_MESSAGES.get(
+                business.status, "Your business access request has already been handled."
+            ),
+        }
+
+    business.status = BusinessStatus.pending_review
+    business.requested_by_email = claims.get("email")
+    db.commit()
+
+    log.info(
+        "business_access_requested",
+        business_id=business.id,
+        auth0_sub=claims.get("sub"),
+    )
+    notify_access_requested(business, claims.get("email"))
+
+    return {
+        "status": "pending_review",
+        "message": "Your access request has been submitted. You'll be notified once it's approved.",
+    }
 
 
 @router.get("/job-postings")
@@ -361,6 +439,8 @@ def get_candidate(
     _write_audit(db, business_id, actor, "candidate_viewed", candidate.id)
     db.commit()
 
+    pipeline_stage = _pipeline_stage_for(candidate)
+
     return {
         "id": candidate.id,
         "name": candidate.name,
@@ -372,6 +452,12 @@ def get_candidate(
         "stage": _stage_for(candidate),
         "messages": [_serialize_message(message) for message in _candidate_messages(db, candidate.id)],
         "screening_transcript": _screening_transcript(db, candidate.id),
+        "scheduled_at": (
+            pipeline_stage.scheduled_at.isoformat()
+            if pipeline_stage and pipeline_stage.scheduled_at
+            else None
+        ),
+        "interview_notes": pipeline_stage.interview_notes if pipeline_stage else None,
     }
 
 
@@ -427,6 +513,130 @@ def shortlist_candidate(
     return {"stage": "shortlisted"}
 
 
+def _interview_confirmation_text(
+    candidate_name: str, scheduled_at: datetime, interview_notes: str | None
+) -> str:
+    when = scheduled_at.strftime("%A, %B %d, %Y at %H:%M UTC")
+    lines = [
+        f"Hi {candidate_name},",
+        "",
+        f"Your interview has been scheduled for {when}.",
+    ]
+    if interview_notes:
+        lines.append(f"Details: {interview_notes}")
+    lines.append("")
+    lines.append("Looking forward to speaking with you!")
+    return "\n".join(lines)
+
+
+def _tool_result_to_dict(result) -> dict:
+    if isinstance(result.structured_content, dict):
+        return result.structured_content
+    return json.loads(result.content[0].text)
+
+
+async def _send_interview_confirmation_email(
+    candidate: Candidate, scheduled_at: datetime, interview_notes: str | None
+) -> None:
+    """Goes through mcp-server's own tools (connect_channel/initiate, both
+    backed by caspian_client there) -- the same path Agent 1/Agent 2 use to
+    send email, not a separate ad hoc client call from this service."""
+    connection = _tool_result_to_dict(
+        await mcp_client.call_tool("connect_channel", {"channel": "email"})
+    )
+    await mcp_client.call_tool(
+        "initiate",
+        {
+            "connection_id": connection["id"],
+            "recipient": candidate.email,
+            "text": _interview_confirmation_text(candidate.name, scheduled_at, interview_notes),
+        },
+    )
+
+
+def _notify_candidate_interview_scheduled(
+    candidate: Candidate, scheduled_at: datetime, interview_notes: str | None
+) -> None:
+    """Best-effort, mirrors `_notify_mcp_screening_assigned`: the stage
+    change has already been committed by the time this runs, so a failure
+    here (mcp-server down, email channel not connected, ...) must never fail
+    the schedule-interview request."""
+    try:
+        asyncio.run(
+            _send_interview_confirmation_email(candidate, scheduled_at, interview_notes)
+        )
+    except Exception:
+        log.warning(
+            "interview_confirmation_email_failed", candidate_id=candidate.id, exc_info=True
+        )
+
+
+@router.post("/candidates/{candidate_id}/schedule-interview")
+def schedule_interview(
+    candidate_id: int,
+    payload: ScheduleInterviewRequest,
+    context: tuple[int, str] = Depends(get_current_actor_and_business),
+    db: Session = Depends(get_db),
+):
+    """Move a candidate into the interview_scheduled pipeline stage, saving
+    the scheduled time and any interviewer notes, then send the candidate a
+    formal confirmation email."""
+    business_id, actor = context
+    candidate = _get_candidate_or_404(db, candidate_id, business_id)
+
+    pipeline_stage = _set_pipeline_stage(db, candidate_id, PipelineStageName.interview_scheduled)
+    pipeline_stage.scheduled_at = payload.scheduled_at
+    pipeline_stage.interview_notes = payload.interview_notes
+
+    _write_audit(db, business_id, actor, "schedule_interview", candidate.id)
+    db.commit()
+
+    log.info(
+        "interview_scheduled",
+        candidate_id=candidate_id,
+        business_id=business_id,
+        scheduled_at=payload.scheduled_at.isoformat(),
+    )
+    _notify_candidate_interview_scheduled(candidate, payload.scheduled_at, payload.interview_notes)
+
+    return {
+        "stage": "interview_scheduled",
+        "scheduled_at": payload.scheduled_at.isoformat(),
+        "interview_notes": payload.interview_notes,
+    }
+
+
+@router.get("/interviews")
+def list_upcoming_interviews(
+    context: tuple[int, str] = Depends(get_current_actor_and_business),
+    db: Session = Depends(get_db),
+):
+    """List candidates currently in interview_scheduled or confirmed stage
+    for the authenticated business, soonest scheduled time first."""
+    business_id, _actor = context
+    rows = (
+        db.query(Candidate, PipelineStage)
+        .join(PipelineStage, PipelineStage.candidate_id == Candidate.id)
+        .filter(
+            Candidate.business_id == business_id,
+            PipelineStage.stage.in_(
+                [PipelineStageName.interview_scheduled, PipelineStageName.confirmed]
+            ),
+        )
+        .order_by(PipelineStage.scheduled_at.asc())
+        .all()
+    )
+    return [
+        {
+            "id": candidate.id,
+            "candidate_name": candidate.name,
+            "job_posting_title": candidate.job_posting.title,
+            "scheduled_at": stage.scheduled_at.isoformat() if stage.scheduled_at else None,
+        }
+        for candidate, stage in rows
+    ]
+
+
 @router.post("/candidates/{candidate_id}/review-with-ai")
 def review_with_ai(
     candidate_id: int,
@@ -473,8 +683,12 @@ def _serialize_tool_result(result) -> dict:
 
 
 @router.get("/mcp-server/status")
-async def mcp_server_status(business_id: int = Depends(get_current_business)):
+async def mcp_server_status(business: Business = Depends(require_active_business)):
     """Proxy mcp-server's plain GET /status (not an MCP protocol call).
+
+    Gated on `require_active_business`: this reflects the live status of
+    shared infrastructure (not business-specific data), but is still a
+    capability an unreviewed business shouldn't get to explore.
 
     Three distinct outcomes, kept distinct on purpose:
     - mcp-server reachable and reporting "running" -> passed through as-is.
@@ -496,8 +710,9 @@ async def mcp_server_status(business_id: int = Depends(get_current_business)):
 
 
 @router.get("/mcp-server/tools")
-async def mcp_server_tools(business_id: int = Depends(get_current_business)):
-    """Real MCP `tools/list` call against mcp-server."""
+async def mcp_server_tools(business: Business = Depends(require_active_business)):
+    """Real MCP `tools/list` call against mcp-server. Gated the same as
+    GET /mcp-server/status -- see that route's docstring."""
     try:
         tools = await mcp_client.list_tools()
     except Exception as exc:
@@ -516,10 +731,12 @@ async def mcp_server_tools(business_id: int = Depends(get_current_business)):
 async def call_mcp_server_tool(
     tool_name: str,
     payload: McpToolCallRequest,
-    business_id: int = Depends(get_current_business),
+    business: Business = Depends(require_active_business),
 ):
     """Real MCP `tools/call` request, forwarding whatever arguments the
-    dashboard's auto-generated form collected."""
+    dashboard's auto-generated form collected. Gated the same as
+    GET /mcp-server/status -- see that route's docstring."""
+    business_id = business.id
     log.info("mcp_tool_call_requested", tool_name=tool_name, business_id=business_id)
     try:
         result = await mcp_client.call_tool(tool_name, payload.arguments)

@@ -32,6 +32,8 @@ export interface CandidateDetail {
   stage: PipelineStage
   messages: Message[]
   screening_transcript: string | null
+  scheduled_at: string | null
+  interview_notes: string | null
 }
 
 export interface UpcomingInterview {
@@ -39,6 +41,11 @@ export interface UpcomingInterview {
   candidate_name: string
   job_posting_title: string
   scheduled_at: string
+}
+
+export interface ScheduleInterviewRequest {
+  scheduled_at: string
+  interview_notes?: string | null
 }
 
 export interface JobPostingCreate {
@@ -52,17 +59,34 @@ export interface JobPostingCreate {
   benefits: string[]
 }
 
+export type BusinessAccessStatus = 'unrequested' | 'pending_review' | 'active' | 'suspended'
+
 export interface Business {
   id: number
   auth0_sub: string
   name: string
   owner_email: string | null
+  needs_onboarding: boolean
+  status: BusinessAccessStatus
   created_at: string
 }
 
-export interface BusinessOnboard {
+export interface BusinessUpdate {
   name: string
-  owner_email: string | null
+}
+
+export interface RequestAccessResult {
+  status: BusinessAccessStatus
+  message: string
+}
+
+export interface AdminBusiness {
+  id: number
+  name: string
+  auth0_sub: string
+  requested_by_email: string | null
+  status: BusinessAccessStatus
+  created_at: string
 }
 
 export type McpServerState = 'starting' | 'running' | 'error' | 'disconnected'

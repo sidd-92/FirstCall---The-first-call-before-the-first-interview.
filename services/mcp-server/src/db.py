@@ -218,12 +218,21 @@ def get_business(business_id: int) -> dict | None:
 
 
 def find_conversation_by_external_id(external_conversation_id: str) -> dict | None:
-    stmt = select(conversations.c.id, conversations.c.candidate_id, conversations.c.channel).where(
-        conversations.c.external_conversation_id == external_conversation_id
-    )
+    stmt = select(
+        conversations.c.id,
+        conversations.c.candidate_id,
+        conversations.c.channel,
+        conversations.c.is_dm,
+    ).where(conversations.c.external_conversation_id == external_conversation_id)
     with engine.connect() as conn:
         row = conn.execute(stmt).first()
     return row._asdict() if row else None
+
+
+def set_conversation_is_dm(conversation_id: int, is_dm: bool) -> None:
+    stmt = update(conversations).where(conversations.c.id == conversation_id).values(is_dm=is_dm)
+    with engine.begin() as conn:
+        conn.execute(stmt)
 
 
 def find_discord_dm_conversation(candidate_id: int) -> dict | None:

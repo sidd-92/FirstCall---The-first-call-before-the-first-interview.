@@ -1,4 +1,10 @@
-"""Tests for business onboarding and listing routes."""
+"""Tests for business onboarding routes.
+
+GET /businesses (list every business to any authenticated caller) used to be
+tested here -- removed along with the route itself, a cross-tenant PII leak
+(see routes/businesses.py's module docstring). Listing businesses for review
+is now GET /admin/businesses (test_admin_routes.py), gated on require_admin.
+"""
 
 import pytest
 from fastapi.testclient import TestClient
@@ -69,25 +75,8 @@ def test_onboard_requires_auth() -> None:
     assert response.status_code in (401, 403)
 
 
-def test_list_businesses_returns_all(db_session):
-    db_session.add_all(
-        [
-            Business(auth0_sub="google-oauth2|list-a", name="A Co"),
-            Business(auth0_sub="google-oauth2|list-b", name="B Co"),
-        ]
-    )
-    db_session.commit()
-
-    _auth_as("google-oauth2|any-user")
-
+def test_list_businesses_route_no_longer_exists() -> None:
+    """GET /businesses used to leak every business's name/owner_email/
+    auth0_sub to any authenticated caller -- removed entirely."""
     response = client.get("/businesses")
-
-    assert response.status_code == 200
-    businesses = {b["name"]: b["auth0_sub"] for b in response.json()}
-    assert businesses["A Co"] == "google-oauth2|list-a"
-    assert businesses["B Co"] == "google-oauth2|list-b"
-
-
-def test_list_businesses_requires_auth() -> None:
-    response = client.get("/businesses")
-    assert response.status_code in (401, 403)
+    assert response.status_code == 404

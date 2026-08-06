@@ -44,19 +44,35 @@ def _reset_discord_module_state():
 
 @dataclass
 class FakeClient:
-    """Stands in for CommClient: `.reply()`, `.initiate()`, and
-    `.send_message()` are exercised -- everything Agent 1's Discord flow
-    (including the DM-invite path) actually calls.
+    """Stands in for CommClient: `.reply()`, `.initiate()`, `.send_message()`,
+    and `.list_messages()` are exercised -- everything Agent 1's Discord flow
+    (including the DM-invite path and chat_type-based DM detection) actually
+    calls.
 
     `initiate_response` lets tests control whether `initiate()` "confirms" a
-    DM (a dict with a `conversation_id`/`id` key -- the default) or leaves
-    it unconfirmed (e.g. `{}` or a dict with neither key), to exercise the
-    fail-closed path when the gateway's response can't be parsed."""
+    DM (a dict with a `conversation_id`/`id` key -- the default) or leaves it
+    unconfirmed (e.g. `{}` or a dict with neither key) -- this is now purely
+    a best-effort delivery nicety in agent1.py and no longer determines
+    `is_dm` (see `conversation_messages` below, which does).
+
+    `conversation_messages` stands in for the real gateway's
+    `list_messages(conversation_id)` response (verified live against the
+    actual gateway -- see agent1.py's module docstring): a dict keyed by
+    conversation id, each value a list of `{"id": ..., "chat_type": ...}`
+    dicts, mirroring the real response shape. Defaults to empty, i.e. the
+    fake gateway confirms nothing as a DM unless a test explicitly says so
+    -- matching agent1.py's fail-closed default.
+
+    `list_messages_error`, if set, makes `list_messages()` raise instead of
+    returning -- simulates a gateway lookup failure/timeout."""
 
     replies: list[dict] = field(default_factory=list)
     initiates: list[dict] = field(default_factory=list)
     sent_messages: list[dict] = field(default_factory=list)
     initiate_response: dict = field(default_factory=lambda: {"id": "conv-cold-1"})
+    conversation_messages: dict[str, list[dict]] = field(default_factory=dict)
+    list_messages_error: Exception | None = None
+    list_messages_calls: list[str] = field(default_factory=list)
 
     def reply(self, message_id, text=None, html=None, blocks=None, media=None):
         self.replies.append({"message_id": message_id, "text": text})
@@ -71,6 +87,18 @@ class FakeClient:
     def send_message(self, conversation_id, text=None, html=None, blocks=None, media=None):
         self.sent_messages.append({"conversation_id": conversation_id, "text": text})
         return {"id": "msg-out-1"}
+
+    def list_messages(self, conversation_id):
+        self.list_messages_calls.append(conversation_id)
+        if self.list_messages_error is not None:
+            raise self.list_messages_error
+        return self.conversation_messages.get(conversation_id, [])
+
+
+def dm_messages(*message_ids: str) -> list[dict]:
+    """Builds a fake `list_messages()` response confirming each id as a DM
+    (`chat_type: "dm"`), mirroring the real gateway's response shape."""
+    return [{"id": message_id, "chat_type": "dm"} for message_id in message_ids]
 
 
 def make_message(**overrides) -> Message:
@@ -183,21 +211,25 @@ def test_discord_holding_message_when_screening_not_assigned(db):
 
 
 def test_discord_asks_first_screening_question_once_assigned(db):
+    """`is_dm` is now determined by looking up THIS message's `chat_type`
+    via `list_messages()` (see agent1._is_dm_message), not by a pre-seeded
+    DB row -- the fake client's `conversation_messages` stands in for the
+    gateway confirming `chat_type == "dm"` for this exact message id."""
     setup_job(db)
     seed_candidate(db, discord_user_id="disc-1")
     seed_pipeline_stage(db, stage="screening_assigned")
-    # This candidate's known DM conversation -- only messages arriving on it
-    # are ever safe for screening content (see agent1.py's is_dm routing).
-    seed_conversation(db, channel="discord", external_conversation_id="dm-conv-1", is_dm=True)
 
+    client = FakeClient(conversation_messages={"dm-conv-1": dm_messages("msg-1")})
     message = make_message(
         channel="discord",
         sender={"address": "disc-1"},
         text="hi",
         conversation_id="dm-conv-1",
+        _client=client,
     )
     agent1.handle_message(message)
 
+    assert client.list_messages_calls == ["dm-conv-1"]
     assert message._client.replies[0]["text"] == (
         "Can you tell me a bit about your relevant experience?"
     )
@@ -207,15 +239,20 @@ def test_discord_asks_second_question_on_next_turn(db):
     setup_job(db)
     seed_candidate(db, discord_user_id="disc-1")
     seed_pipeline_stage(db, stage="screening_assigned")
-    seed_conversation(db, channel="discord", external_conversation_id="dm-conv-1", is_dm=True)
 
     conv_id = "dm-conv-1"
+    # Same conversation, two distinct messages -- each turn's chat_type is
+    # looked up fresh (see agent1.py's module docstring: never cached or
+    # reused from an earlier message), so both ids must be confirmed here.
+    client = FakeClient(conversation_messages={conv_id: dm_messages("msg-1", "msg-2")})
     agent1.handle_message(
         make_message(
             channel="discord",
             sender={"address": "disc-1"},
             text="hi",
             conversation_id=conv_id,
+            id="msg-1",
+            _client=client,
         )
     )
     second = make_message(
@@ -223,17 +260,18 @@ def test_discord_asks_second_question_on_next_turn(db):
         sender={"address": "disc-1"},
         text="I worked at a cafe for 2 years.",
         conversation_id=conv_id,
+        id="msg-2",
+        _client=client,
     )
     agent1.handle_message(second)
 
-    assert second._client.replies[0]["text"] == "What are your salary expectations?"
+    assert second._client.replies[-1]["text"] == "What are your salary expectations?"
 
 
 def test_discord_sends_closing_message_after_last_question(db, monkeypatch):
     setup_job(db)
     seed_candidate(db, discord_user_id="disc-1")
     seed_pipeline_stage(db, stage="screening_assigned")
-    seed_conversation(db, channel="discord", external_conversation_id="dm-conv-1", is_dm=True)
 
     notified = []
     monkeypatch.setattr(
@@ -243,18 +281,22 @@ def test_discord_sends_closing_message_after_last_question(db, monkeypatch):
     )
 
     conv_id = "dm-conv-1"
+    ids = ["msg-1", "msg-2", "msg-3"]
+    client = FakeClient(conversation_messages={conv_id: dm_messages(*ids)})
     texts = ["hi", "answer one", "answer two"]
     last_message = None
-    for text in texts:
+    for message_id, text in zip(ids, texts):
         last_message = make_message(
             channel="discord",
             sender={"address": "disc-1"},
             text=text,
             conversation_id=conv_id,
+            id=message_id,
+            _client=client,
         )
         agent1.handle_message(last_message)
 
-    assert "that's everything for now" in last_message._client.replies[0]["text"]
+    assert "that's everything for now" in last_message._client.replies[-1]["text"]
     assert db.get_pipeline_stage(1) == "screening_completed"
     assert notified == [1]
 
@@ -331,8 +373,11 @@ def test_discord_linking_opens_a_dm_invite_when_configured(db):
     """When a Discord connection is available (set by `register()` at
     startup), linking must immediately try to open a DM -- the earliest
     point this code can act, since caspian-sdk has no join-time hook (see
-    module docstring). Since `initiate()`'s response here confirms an id
-    (FakeClient's default), that id is recorded as the candidate's DM."""
+    module docstring). This is purely a best-effort delivery nicety now --
+    it does NOT determine `is_dm` for anything (see
+    `test_discord_reply_with_confirmed_chat_type_gets_real_screening_content`
+    and `test_discord_linking_message_itself_can_be_confirmed_as_dm` for
+    what does)."""
     setup_job(db)
     seed_candidate(db, discord_link_code="ABC123")
     agent1._discord_connection["id"] = "conn-discord-1"
@@ -348,51 +393,127 @@ def test_discord_linking_opens_a_dm_invite_when_configured(db):
     assert len(message._client.initiates) == 1
     assert message._client.initiates[0]["connection_id"] == "conn-discord-1"
     assert message._client.initiates[0]["recipient"] == "disc-99"
+    # No list_messages() confirmation was configured on this client -- fails
+    # closed, same as any other unconfirmed message.
+    assert db.find_discord_dm_conversation(1) is None
+
+
+def test_discord_linking_message_itself_can_be_confirmed_as_dm(db):
+    """If the gateway's `list_messages()` confirms `chat_type == "dm"` for
+    the very first (linking) message, it's recorded as the candidate's DM
+    immediately -- `is_dm` comes from the chat_type lookup, not from
+    `initiate()`."""
+    setup_job(db)
+    seed_candidate(db, discord_link_code="ABC123")
+
+    client = FakeClient(conversation_messages={"ext-conv-link-1": dm_messages("msg-1")})
+    message = make_message(
+        channel="discord",
+        sender={"address": "disc-99"},
+        text="ABC123",
+        conversation_id="ext-conv-link-1",
+        _client=client,
+    )
+    agent1.handle_message(message)
+
     dm_conversation = db.find_discord_dm_conversation(1)
     assert dm_conversation is not None
-    assert dm_conversation["external_conversation_id"] == "conv-cold-1"
+    assert dm_conversation["external_conversation_id"] == "ext-conv-link-1"
 
 
-def test_discord_reply_on_confirmed_dm_conversation_gets_real_screening_content(db):
-    """Once `initiate()` positively confirms a conversation id, a later
-    inbound message arriving on THAT SAME id (the real DM thread) is safe
-    for screening content."""
+def test_discord_reply_with_confirmed_chat_type_gets_real_screening_content(db):
+    """The gateway's own `chat_type` field (fetched fresh via
+    `list_messages()` for THIS message) is the sole source of truth for
+    `is_dm` -- when it positively confirms "dm", the message is safe for
+    real screening content."""
     setup_job(db)
     seed_candidate(db, discord_link_code="ABC123")
     seed_pipeline_stage(db, stage="screening_assigned")
     agent1._discord_connection["id"] = "conn-discord-1"
 
+    link_client = FakeClient()
     agent1.handle_message(
         make_message(
             channel="discord",
             sender={"address": "disc-99"},
             text="ABC123",
             conversation_id="ext-conv-link-1",
+            _client=link_client,
         )
     )
 
+    dm_client = FakeClient(conversation_messages={"conv-real-dm": dm_messages("msg-1")})
     dm_reply = make_message(
         channel="discord",
         sender={"address": "disc-99"},
         text="hi again",
-        conversation_id="conv-cold-1",  # matches what initiate() confirmed
+        conversation_id="conv-real-dm",
+        _client=dm_client,
     )
     agent1.handle_message(dm_reply)
 
+    assert dm_client.list_messages_calls == ["conv-real-dm"]
     assert dm_reply._client.replies[0]["text"] == (
         "Can you tell me a bit about your relevant experience?"
     )
 
 
-def test_discord_reply_on_unconfirmed_conversation_id_is_never_trusted(db):
-    """Fail-closed: even after a DM invite was sent, a message on a
-    conversation id that was NEVER confirmed by `initiate()`'s response
-    (e.g. the original linking conversation, or any other id) must not be
-    trusted as the DM -- it gets redirected, not real screening content.
-    This is the exact scenario the fix protects against: a candidate could
-    reply to the invite from a channel we never confirmed as their DM (say,
-    because Discord's own "block DMs" setting silently no-ops the invite),
-    and this must never leak content there."""
+def test_discord_repeat_message_after_linking_with_failed_lookup_is_never_trusted(db):
+    """Regression test for the live bug: a candidate's first message (their
+    link code) was correctly recognized, but their SECOND message in the
+    exact same DM thread got the generic redirect because nothing had ever
+    positively confirmed it as a DM. Reproduces that shape here: linking
+    succeeds, then a later message on the same conversation has its
+    `list_messages()` lookup fail outright (simulating a gateway
+    error/timeout) -- fail-closed means it still gets the redirect, not real
+    screening content, never a crash."""
+    setup_job(db)
+    seed_candidate(db, discord_link_code="ABC123")
+    seed_pipeline_stage(db, stage="screening_assigned")
+    agent1._discord_connection["id"] = "conn-discord-1"
+
+    conv_id = "conv-real-dm"
+    agent1.handle_message(
+        make_message(
+            channel="discord",
+            sender={"address": "disc-99"},
+            text="ABC123",
+            conversation_id="ext-conv-link-1",
+            _client=FakeClient(),
+        )
+    )
+
+    failing_client = FakeClient(list_messages_error=RuntimeError("gateway timeout"))
+    second = make_message(
+        channel="discord",
+        sender={"address": "disc-99"},
+        text="Any update?",
+        conversation_id=conv_id,
+        _client=failing_client,
+    )
+    agent1.handle_message(second)
+
+    reply_text = second._client.replies[0]["text"]
+    assert reply_text == agent1.screening.DM_REDIRECT_MESSAGE
+    assert "experience" not in reply_text.lower()
+
+
+@pytest.mark.parametrize(
+    "conversation_messages",
+    [
+        pytest.param({}, id="message_not_found_in_response"),
+        pytest.param(
+            {"conv-real-dm": [{"id": "msg-1", "chat_type": "channel"}]}, id="non_dm_chat_type"
+        ),
+        pytest.param({"conv-real-dm": [{"id": "msg-1", "chat_type": None}]}, id="null_chat_type"),
+        pytest.param({"conv-real-dm": "not-a-list"}, id="malformed_response"),
+    ],
+)
+def test_discord_reply_with_non_dm_chat_type_is_never_trusted(db, conversation_messages):
+    """Anything other than a positively-returned `chat_type == "dm"` --
+    including the message simply not appearing in the response, a
+    non-"dm"/null chat_type, or a malformed response shape -- fails closed
+    exactly like a lookup that raises."""
     setup_job(db)
     seed_candidate(db, discord_link_code="ABC123")
     seed_pipeline_stage(db, stage="screening_assigned")
@@ -404,27 +525,29 @@ def test_discord_reply_on_unconfirmed_conversation_id_is_never_trusted(db):
             sender={"address": "disc-99"},
             text="ABC123",
             conversation_id="ext-conv-link-1",
+            _client=FakeClient(),
         )
     )
 
-    unconfirmed_reply = make_message(
+    client = FakeClient(conversation_messages=conversation_messages)
+    second = make_message(
         channel="discord",
         sender={"address": "disc-99"},
-        text="hi again",
-        conversation_id="some-other-channel-entirely",
+        text="Any update?",
+        conversation_id="conv-real-dm",
+        _client=client,
     )
-    agent1.handle_message(unconfirmed_reply)
+    agent1.handle_message(second)
 
-    reply_text = unconfirmed_reply._client.replies[0]["text"]
-    assert reply_text == agent1.screening.DM_REDIRECT_MESSAGE
-    assert "experience" not in reply_text.lower()
+    assert second._client.replies[0]["text"] == agent1.screening.DM_REDIRECT_MESSAGE
 
 
-def test_discord_dm_invite_with_unconfirmable_response_records_no_dm(db):
+def test_discord_dm_invite_with_unconfirmable_response_does_not_crash(db):
     """If `initiate()` succeeds but its response has no recognizable
     conversation id (the gateway equivalent of "we can't tell you whether
-    this landed in a DM"), nothing is recorded as a DM, and the candidate's
-    next message -- from wherever -- still doesn't get screening content."""
+    this landed in a DM"), that's a no-op for `is_dm` -- it's purely a
+    best-effort delivery nicety now (see module docstring) -- and doesn't
+    crash the handler or affect how any message is classified."""
     setup_job(db)
     seed_candidate(db, discord_link_code="ABC123")
     seed_pipeline_stage(db, stage="screening_assigned")

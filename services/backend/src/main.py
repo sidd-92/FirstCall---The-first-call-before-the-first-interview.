@@ -15,7 +15,7 @@ load_dotenv()
 from src.db import engine
 from src.logging_config import configure_logging, get_logger
 from src.models import Base
-from src.routes import businesses, dashboard, public
+from src.routes import admin, businesses, dashboard, public
 
 configure_logging()
 log = get_logger()
@@ -35,6 +35,36 @@ async def lifespan(app: FastAPI):
             conn.execute(
                 text("ALTER TABLE conversations ADD COLUMN is_dm BOOLEAN NOT NULL DEFAULT 0")
             )
+        except OperationalError:
+            pass  # column already exists
+        try:
+            conn.execute(
+                text(
+                    "ALTER TABLE businesses ADD COLUMN needs_onboarding "
+                    "BOOLEAN NOT NULL DEFAULT 1"
+                )
+            )
+        except OperationalError:
+            pass  # column already exists
+        try:
+            conn.execute(text("ALTER TABLE pipeline_stages ADD COLUMN scheduled_at DATETIME"))
+        except OperationalError:
+            pass  # column already exists
+        try:
+            conn.execute(text("ALTER TABLE pipeline_stages ADD COLUMN interview_notes TEXT"))
+        except OperationalError:
+            pass  # column already exists
+        try:
+            conn.execute(
+                text(
+                    "ALTER TABLE businesses ADD COLUMN status TEXT NOT NULL "
+                    "DEFAULT 'unrequested'"
+                )
+            )
+        except OperationalError:
+            pass  # column already exists
+        try:
+            conn.execute(text("ALTER TABLE businesses ADD COLUMN requested_by_email TEXT"))
         except OperationalError:
             pass  # column already exists
     log.info("backend_starting")
@@ -61,6 +91,7 @@ app.add_middleware(
 app.include_router(public.router)
 app.include_router(dashboard.router)
 app.include_router(businesses.router)
+app.include_router(admin.router)
 
 
 @app.exception_handler(NotImplementedError)
