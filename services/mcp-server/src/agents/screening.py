@@ -14,6 +14,11 @@ HOLDING_MESSAGE = (
     "we'll follow up here once you're invited to the next step."
 )
 
+POST_SCREENING_MESSAGE = (
+    "Thanks for the message! You've already completed screening -- "
+    "we'll follow up here with any updates as your application moves forward."
+)
+
 UNRECOGNIZED_MESSAGE = (
     "Thanks for the message! We couldn't match this to an application on file -- "
     "please make sure you applied with the email tied to this account, or reach "

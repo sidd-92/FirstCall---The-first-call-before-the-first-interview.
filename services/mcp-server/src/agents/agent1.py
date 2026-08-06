@@ -4,9 +4,10 @@ Both Email and Discord connect through the single `handle_message` function
 registered below -- do not split this into one handler per channel; branch
 on `message.channel` instead.
 
-- Email: answer FAQ questions about a job posting (parsed from the subject's
-  "[JOB-{id}]" tag), falling back to Claude Haiku only for questions the
-  fixed FAQ doesn't cover (src/agents/faq.py).
+- Email: answer FAQ questions about a job posting (identified via the
+  "[JOB-{id}]" tag -- see `_resolve_email_job_tag` for where that tag
+  actually lives, and why), falling back to Claude Haiku only for questions
+  the fixed FAQ doesn't cover (src/agents/faq.py).
 - Discord: run the fixed screening question sequence (src/agents/screening.py)
   once HR has assigned screening for that candidate; otherwise send a
   holding reply. No LLM call is used to sequence questions -- only (later,
@@ -93,19 +94,80 @@ def _get_or_create_conversation(
     return db.create_conversation(candidate_id, channel, external_conversation_id)
 
 
+def with_job_tag(text: str, job_posting_id: int) -> str:
+    """Appends the `[JOB-{id}]` tag every outbound email in a thread must
+    carry, in the BODY -- never the subject. caspian-sdk 0.6.1 (verified
+    against the SDK source and the live gateway's own OpenAPI schema) gives
+    `initiate()`/`reply()`/`send_message()` no way to set an email Subject
+    at all, so a candidate's very first email from this agent (the
+    application confirmation) can never carry the tag there, and neither
+    can anything replying in that thread. The body is the only place this
+    tag can reliably live and survive a reply's quoted history."""
+    return f"{text}\n\n[JOB-{job_posting_id}]"
+
+
+def _reply_with_faq_answer(
+    conv_log, message: Message, conversation_id: int, job_posting_id: int
+) -> None:
+    config = load_job_agent_config(job_posting_id)
+    if config is None:
+        conv_log.error("job_posting_not_found")
+        message.reply(text="Sorry, we couldn't find that role anymore.")
+        return
+
+    storage.save_message(conversation_id, "inbound", message.text or "")
+
+    answer, used_llm_fallback = faq.answer_question(config, message.text)
+    reply_text = with_job_tag(answer, job_posting_id)
+    message.reply(text=reply_text)
+    storage.save_message(conversation_id, "outbound", reply_text, kind="faq_answer")
+
+    conv_log.info("faq_answered", used_llm_fallback=used_llm_fallback)
+
+
+def _resolve_email_job_tag(message: Message) -> int | None:
+    """Finds the `[JOB-{id}]` tag for an email that isn't already resolved
+    via a tracked conversation (see `_handle_email`) -- checks the subject
+    first (in case a candidate typed the tag there themselves), then falls
+    back to the body, since every outbound email from this agent embeds the
+    tag there instead (see `with_job_tag`; caspian-sdk gives us no way to
+    set a real Subject on these emails at all)."""
+    match = JOB_TAG_RE.search(message.subject or "") or JOB_TAG_RE.search(message.text or "")
+    return int(match.group(1)) if match else None
+
+
 def _handle_email(message: Message) -> None:
     conv_log = log.bind(channel="email")
     conv_log.info("message_received")
 
-    match = JOB_TAG_RE.search(message.subject or "")
-    if not match:
+    # Prefer resolving via the conversation this message arrived on: if the
+    # application confirmation's initiate() call was able to record its
+    # resulting conversation id (see services/backend/src/routes/public.py's
+    # _record_email_conversation), a reply in that thread resolves straight
+    # to the candidate/job with no tag parsing needed at all -- robust even
+    # if a candidate's mail client mangles the quoted body.
+    existing_conversation = db.find_conversation_by_external_id(message.conversation_id)
+    if existing_conversation is not None:
+        candidate = db.get_candidate(existing_conversation["candidate_id"])
+        if candidate is not None:
+            conv_log = conv_log.bind(
+                candidate_id=candidate["id"], job_posting_id=candidate["job_posting_id"]
+            )
+            _reply_with_faq_answer(
+                conv_log, message, existing_conversation["id"], candidate["job_posting_id"]
+            )
+            return
+
+    # No tracked conversation -- fresh contact, or an untracked/legacy
+    # thread. Fall back to the [JOB-id] tag (see _resolve_email_job_tag).
+    job_posting_id = _resolve_email_job_tag(message)
+    if job_posting_id is None:
         conv_log.warning("email_missing_job_tag")
         message.reply(
             text="Sorry, we couldn't tell which role this is about -- please reply using "
             "the original application email thread so we can find your application."
         )
         return
-    job_posting_id = int(match.group(1))
 
     sender_email = (message.sender or {}).get("email")
     candidate = (
@@ -122,22 +184,10 @@ def _handle_email(message: Message) -> None:
     candidate_id = candidate["id"]
     conv_log = conv_log.bind(candidate_id=candidate_id, job_posting_id=job_posting_id)
 
-    config = load_job_agent_config(job_posting_id)
-    if config is None:
-        conv_log.error("job_posting_not_found")
-        message.reply(text="Sorry, we couldn't find that role anymore.")
-        return
-
     conversation_id = _get_or_create_conversation(
         candidate_id, "email", message.conversation_id
     )
-    storage.save_message(conversation_id, "inbound", message.text or "")
-
-    answer, used_llm_fallback = faq.answer_question(config, message.text)
-    message.reply(text=answer)
-    storage.save_message(conversation_id, "outbound", answer, kind="faq_answer")
-
-    conv_log.info("faq_answered", used_llm_fallback=used_llm_fallback)
+    _reply_with_faq_answer(conv_log, message, conversation_id, job_posting_id)
 
 
 def _open_discord_dm(
@@ -395,13 +445,27 @@ def _handle_discord(message: Message) -> None:
     storage.save_message(conversation_id, "inbound", message.text or "")
 
     stage = db.get_pipeline_stage(candidate_id)
-    if stage != "screening_assigned":
+    if stage is None or stage == "applied":
         # Generic, non-candidate-specific content -- safe to send wherever
         # this message came from, DM or not.
         conv_log.info("discord_holding_reply", stage=stage)
         message.reply(text=screening.HOLDING_MESSAGE)
         storage.save_message(
             conversation_id, "outbound", screening.HOLDING_MESSAGE, kind="holding"
+        )
+        return
+
+    if stage != "screening_assigned":
+        # Already past screening (screening_completed, shortlisted,
+        # interview_scheduled, confirmed, ...) -- never reuse the
+        # pre-screening HOLDING_MESSAGE here: it reads as "still being
+        # reviewed," which is stale/wrong once the candidate has moved
+        # further down the pipeline. Generic, non-candidate-specific content
+        # -- safe to send wherever this message came from, DM or not.
+        conv_log.info("discord_post_screening_reply", stage=stage)
+        message.reply(text=screening.POST_SCREENING_MESSAGE)
+        storage.save_message(
+            conversation_id, "outbound", screening.POST_SCREENING_MESSAGE, kind="post_screening"
         )
         return
 

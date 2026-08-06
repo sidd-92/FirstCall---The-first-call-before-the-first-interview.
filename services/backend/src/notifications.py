@@ -84,7 +84,15 @@ def notify_access_requested(business: Business, requester_email: str | None) -> 
     """Best-effort: notify the platform admin that a business wants its
     self-service signup reviewed (POST /business/request-access). Same
     CommClient/`initiate()` path as `notify_new_application` above -- not a
-    separate ad hoc email integration."""
+    separate ad hoc email integration.
+
+    The body leads with a subject-like summary line rather than relying on
+    an actual `Subject:` header: caspian-sdk 0.6.1 gives `initiate()` no way
+    to set one at all (verified against the SDK source and the live
+    gateway's own OpenAPI schema -- see mcp-server's agent1.py module
+    docstring), so every agent-sent email shows as "(no subject)" in Gmail
+    regardless. This at least keeps the summary visible in the inbox
+    preview line."""
     notify_log = log.bind(business_id=business.id, notification_type="access_requested")
 
     if not PLATFORM_ADMIN_EMAIL:
@@ -98,7 +106,8 @@ def notify_access_requested(business: Business, requester_email: str | None) -> 
             connection_id,
             recipient=PLATFORM_ADMIN_EMAIL,
             text=(
-                f"New access request from '{business.name}' (business_id={business.id}). "
+                f"New access request: {business.name}\n\n"
+                f"Business id: {business.id}. "
                 f"Requesting user: {requester_email or 'unknown'}. "
                 f"Requested at {requested_at}. "
                 "Review it in the FirstCall admin panel."

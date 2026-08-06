@@ -18,7 +18,15 @@ from sqlalchemy.orm import Session
 from src import mcp_client
 from src.db import get_db
 from src.logging_config import get_logger
-from src.models import Business, Candidate, JobPosting, PipelineStage, PipelineStageName
+from src.models import (
+    Business,
+    Candidate,
+    ChannelType,
+    Conversation,
+    JobPosting,
+    PipelineStage,
+    PipelineStageName,
+)
 from src.notifications import notify_new_application
 
 log = get_logger()
@@ -54,7 +62,16 @@ def _application_confirmation_text(candidate: Candidate, job_posting: JobPosting
     """Mirrors what's shown on the landing page's one-time confirmation
     screen (JobDetailPage.tsx) -- this email is the candidate's permanent,
     searchable copy of that screen, since there's no candidate login/"my
-    applications" page by design."""
+    applications" page by design.
+
+    Carries the `[JOB-{id}]` tag in the BODY, not the subject: caspian-sdk
+    0.6.1 gives `initiate()` no way to set an email Subject at all (verified
+    against the SDK source and the live gateway's own OpenAPI schema -- see
+    mcp-server's agent1.py module docstring), so this is the only place the
+    tag can live and reliably survive into a reply's quoted history for
+    mcp-server's `_handle_email` to find. This is the anchor for the whole
+    thread -- every reply mcp-server sends embeds the same tag via
+    `agent1.with_job_tag`."""
     lines = [
         f"Hi {candidate.name},",
         "",
@@ -65,25 +82,30 @@ def _application_confirmation_text(candidate: Candidate, job_posting: JobPosting
     ]
     lines += [
         "",
-        "Get updates over Discord (optional): DM our Discord bot the code "
-        f"below to connect your application: {candidate.discord_link_code}",
+        (
+            "Get updates over Discord (optional): DM our Discord bot the code "
+            f"below to connect your application: {candidate.discord_link_code}"
+        ),
     ]
     if DISCORD_INVITE_URL:
         lines.append(f"Join our Discord server: {DISCORD_INVITE_URL}")
+    lines += ["", f"[JOB-{job_posting.id}]"]
     return "\n".join(lines)
 
 
 async def _send_application_confirmation_email(
     candidate: Candidate, job_posting: JobPosting
-) -> None:
+) -> dict:
     """Goes through mcp-server's own tools (connect_channel/initiate, both
     backed by caspian_client there) -- the same path the interview
     confirmation email (routes/dashboard.py) uses, not a separate ad hoc
-    email integration."""
+    email integration. Returns `initiate()`'s raw tool result so the caller
+    can try to record the resulting conversation id (see
+    `_record_email_conversation`)."""
     connection = _tool_result_to_dict(
         await mcp_client.call_tool("connect_channel", {"channel": "email"})
     )
-    await mcp_client.call_tool(
+    result = await mcp_client.call_tool(
         "initiate",
         {
             "connection_id": connection["id"],
@@ -91,15 +113,48 @@ async def _send_application_confirmation_email(
             "text": _application_confirmation_text(candidate, job_posting),
         },
     )
+    return _tool_result_to_dict(result)
 
 
-def _notify_candidate_application_received(candidate: Candidate, job_posting: JobPosting) -> None:
+def _record_email_conversation(db: Session, candidate_id: int, initiate_result: dict) -> None:
+    """Best-effort: if `initiate()`'s response includes a recognizable
+    conversation id, record it against the candidate now, so a reply in this
+    thread resolves straight to the candidate/job via
+    mcp-server's `_handle_email` -- no tag parsing needed at all for it.
+    Mirrors mcp-server's `_open_discord_dm` parsing of the same ambiguous
+    response shape. A response with no recognizable id (or any failure here)
+    just means this thread falls back to tag parsing instead -- never fails
+    the apply request."""
+    external_conversation_id = initiate_result.get("conversation_id") or initiate_result.get("id")
+    if not external_conversation_id:
+        return
+    existing = (
+        db.query(Conversation)
+        .filter(Conversation.external_conversation_id == external_conversation_id)
+        .first()
+    )
+    if existing is not None:
+        return
+    db.add(
+        Conversation(
+            candidate_id=candidate_id,
+            channel=ChannelType.email,
+            external_conversation_id=external_conversation_id,
+        )
+    )
+    db.commit()
+
+
+def _notify_candidate_application_received(
+    db: Session, candidate: Candidate, job_posting: JobPosting
+) -> None:
     """Best-effort, mirrors dashboard.py's `_notify_candidate_interview_scheduled`:
     the application has already been committed by the time this runs, so a
     failure here (mcp-server down, email channel not connected, ...) must
     never fail the apply request."""
     try:
-        asyncio.run(_send_application_confirmation_email(candidate, job_posting))
+        initiate_result = asyncio.run(_send_application_confirmation_email(candidate, job_posting))
+        _record_email_conversation(db, candidate.id, initiate_result)
     except Exception:
         log.warning(
             "application_confirmation_email_failed", candidate_id=candidate.id, exc_info=True
@@ -191,6 +246,6 @@ def apply_to_job(
 
     business = db.query(Business).filter(Business.id == job_posting.business_id).first()
     notify_new_application(candidate, job_posting, business)
-    _notify_candidate_application_received(candidate, job_posting)
+    _notify_candidate_application_received(db, candidate, job_posting)
 
     return {"id": candidate.id, "discord_link_code": candidate.discord_link_code}

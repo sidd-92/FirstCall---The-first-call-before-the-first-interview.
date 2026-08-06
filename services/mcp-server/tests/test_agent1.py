@@ -164,7 +164,65 @@ def test_email_falls_back_to_llm_for_uncovered_question(db, monkeypatch):
     )
     agent1.handle_message(message)
 
-    assert message._client.replies[0]["text"] == "We're flexible on start date."
+    reply_text = message._client.replies[0]["text"]
+    assert reply_text.startswith("We're flexible on start date.")
+    # Every outbound reply embeds the [JOB-id] tag in the BODY -- caspian-sdk
+    # gives us no way to set a real email Subject at all (see
+    # agent1.with_job_tag), so this is what a reply-in-thread (or a fresh
+    # email quoting this one back) has to find the tag in.
+    assert "[JOB-1]" in reply_text
+
+
+def test_email_reply_embeds_job_tag_in_body_not_subject(db, monkeypatch):
+    """Regression test: caspian-sdk 0.6.1's initiate()/reply()/send_message()
+    have no way to set an email Subject at all (verified against the SDK
+    source and the live gateway's OpenAPI schema), so the [JOB-id] tag must
+    survive in the BODY of every outbound email -- never rely on it being in
+    `message.subject`."""
+    setup_job(db)
+    seed_candidate(db, email="jamie@example.com")
+
+    message = make_message(
+        channel="email",
+        subject=None,
+        sender={"email": "jamie@example.com"},
+        text="What is the salary range? [JOB-1]",
+    )
+    agent1.handle_message(message)
+
+    assert "20-24" in message._client.replies[0]["text"]
+    assert "[JOB-1]" in message._client.replies[0]["text"]
+
+
+def test_email_reply_on_tracked_conversation_resolves_without_any_tag(db):
+    """The other half of the fix: when the application confirmation's
+    initiate() call was able to record its conversation id (see
+    services/backend/src/routes/public.py's _record_email_conversation), a
+    reply on that exact conversation resolves straight to the
+    candidate/job via the tracked conversation row -- no [JOB-id] tag
+    needed anywhere, subject or body. This is the robust path; tag parsing
+    (see test_email_reply_embeds_job_tag_in_body_not_subject) is only the
+    fallback for untracked/legacy threads."""
+    setup_job(db)
+    seed_candidate(db, email="jamie@example.com")
+    seed_conversation(
+        db,
+        channel="email",
+        external_conversation_id="conv-email-thread-1",
+        is_dm=False,
+    )
+
+    message = make_message(
+        channel="email",
+        subject=None,
+        conversation_id="conv-email-thread-1",
+        sender={"email": "jamie@example.com"},
+        text="What is the salary range?",
+    )
+    agent1.handle_message(message)
+
+    assert "20-24" in message._client.replies[0]["text"]
+    assert "[JOB-1]" in message._client.replies[0]["text"]
 
 
 def test_email_missing_job_tag_gets_generic_reply(db):
@@ -208,6 +266,32 @@ def test_discord_holding_message_when_screening_not_assigned(db):
     agent1.handle_message(message)
 
     assert "still being reviewed" in message._client.replies[0]["text"]
+
+
+@pytest.mark.parametrize(
+    "stage", ["screening_completed", "shortlisted", "interview_scheduled", "confirmed"]
+)
+def test_discord_post_screening_reply_when_stage_past_screening_assigned(db, stage):
+    """Regression test: a candidate who has moved past screening_assigned
+    (shortlisted, interview_scheduled, ...) must NOT get the pre-screening
+    HOLDING_MESSAGE ("still being reviewed") -- that's stale/wrong once
+    they've progressed further. They get a distinct post-screening reply
+    instead, saved under its own kind (not "holding")."""
+    setup_job(db)
+    seed_candidate(db, discord_user_id="disc-1")
+    seed_pipeline_stage(db, stage=stage)
+
+    message = make_message(
+        channel="discord",
+        sender={"address": "disc-1"},
+        text="any update?",
+        conversation_id="ext-conv-discord-1",
+    )
+    agent1.handle_message(message)
+
+    reply_text = message._client.replies[0]["text"]
+    assert reply_text == agent1.screening.POST_SCREENING_MESSAGE
+    assert "still being reviewed" not in reply_text
 
 
 def test_discord_asks_first_screening_question_once_assigned(db):
