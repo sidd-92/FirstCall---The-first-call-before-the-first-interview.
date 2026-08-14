@@ -1,14 +1,18 @@
 import { describe, expect, it, vi } from 'vitest'
-import { buildApplicationMailto } from './mailto'
+import { buildApplicationSubject, getApplicationEmailAddress } from './mailto'
 
-describe('buildApplicationMailto', () => {
-  it('builds a mailto link with the agent email and a subject tagged with the job id', () => {
+describe('getApplicationEmailAddress', () => {
+  it('returns the configured agent email address', () => {
     vi.stubEnv('VITE_AGENT_EMAIL_ADDRESS', 'hiring@example.com')
 
-    const link = buildApplicationMailto('Senior Baker', '42')
+    expect(getApplicationEmailAddress()).toBe('hiring@example.com')
+  })
+})
 
-    expect(link).toBe(
-      'mailto:hiring@example.com?subject=Application%3A%20Senior%20Baker%20%5BJOB-42%5D',
+describe('buildApplicationSubject', () => {
+  it('builds a plain-text subject tagged with the job id', () => {
+    expect(buildApplicationSubject('Senior Baker', '42')).toBe(
+      'Application: Senior Baker [JOB-42]',
     )
   })
 })

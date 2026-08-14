@@ -1,5 +1,7 @@
-export function buildApplicationMailto(jobTitle: string, jobId: string): string {
-  const agentEmail = import.meta.env.VITE_AGENT_EMAIL_ADDRESS as string
-  const subject = `Application: ${jobTitle} [JOB-${jobId}]`
-  return `mailto:${agentEmail}?subject=${encodeURIComponent(subject)}`
+export function getApplicationEmailAddress(): string {
+  return import.meta.env.VITE_AGENT_EMAIL_ADDRESS as string
+}
+
+export function buildApplicationSubject(jobTitle: string, jobId: string): string {
+  return `Application: ${jobTitle} [JOB-${jobId}]`
 }

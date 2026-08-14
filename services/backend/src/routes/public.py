@@ -13,7 +13,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from src import mcp_client
 from src.db import get_db
@@ -66,13 +66,21 @@ def _application_confirmation_text(candidate: Candidate, job_posting: JobPosting
 
     Carries the `[JOB-{id}]` tag in the BODY, not the subject: caspian-sdk
     0.6.1 gives `initiate()` no way to set an email Subject at all (verified
-    against the SDK source and the live gateway's own OpenAPI schema -- see
-    mcp-server's agent1.py module docstring), so this is the only place the
-    tag can live and reliably survive into a reply's quoted history for
-    mcp-server's `_handle_email` to find. This is the anchor for the whole
-    thread -- every reply mcp-server sends embeds the same tag via
-    `agent1.with_job_tag`."""
+    against the SDK source -- `Client.initiate()` in caspian_sdk/client.py
+    takes only `connection_id`/`recipient`/`text`, no `subject`; only the
+    unrelated `test_email()` helper accepts one -- and the live gateway's
+    own OpenAPI schema; see mcp-server's agent1.py module docstring), so
+    this is the only place the tag can live and reliably survive into a
+    reply's quoted history for mcp-server's `_handle_email` to find. This
+    is the anchor for the whole thread -- every reply mcp-server sends
+    embeds the same tag via `agent1.with_job_tag`.
+
+    For the same reason, the "Thanks for Applying to {title}" subject line
+    the candidate sees is the first line of the body, not a real email
+    Subject header -- most clients still show it as the message preview."""
     lines = [
+        f"Thanks for Applying to {job_posting.title}",
+        "",
         f"Hi {candidate.name},",
         "",
         f'Thanks for applying to "{job_posting.title}". Your application has been received.',
@@ -82,13 +90,20 @@ def _application_confirmation_text(candidate: Candidate, job_posting: JobPosting
     ]
     lines += [
         "",
-        (
-            "Get updates over Discord (optional): DM our Discord bot the code "
-            f"below to connect your application: {candidate.discord_link_code}"
-        ),
+        "Get updates over Discord (optional):",
+        f"Your code: {candidate.discord_link_code}",
     ]
+    step = 1
     if DISCORD_INVITE_URL:
-        lines.append(f"Join our Discord server: {DISCORD_INVITE_URL}")
+        lines.append(f"{step}. Join our Discord server: {DISCORD_INVITE_URL}")
+        step += 1
+    lines += [
+        f"{step}. In Discord, open Direct Messages and start a chat with the "
+        "FirstCallApplication bot (not the server's text channels).",
+        f"{step + 1}. Paste your code above into that DM and send it.",
+        f"{step + 2}. The bot replies right away to confirm it's linked -- "
+        "application updates will arrive in that same DM thread.",
+    ]
     lines += ["", f"[JOB-{job_posting.id}]"]
     return "\n".join(lines)
 
@@ -177,13 +192,19 @@ def _serialize_job_posting(job_posting: JobPosting) -> dict:
         "pay_currency": job_posting.pay_currency,
         "benefits": benefits,
         "faq_json": job_posting.faq_json,
+        "business_name": job_posting.business.name,
     }
 
 
 @router.get("/jobs")
 def list_jobs(db: Session = Depends(get_db)):
     """List active job postings across all businesses."""
-    job_postings = db.query(JobPosting).filter(JobPosting.is_active.is_(True)).all()
+    job_postings = (
+        db.query(JobPosting)
+        .options(joinedload(JobPosting.business))
+        .filter(JobPosting.is_active.is_(True))
+        .all()
+    )
     return [_serialize_job_posting(job_posting) for job_posting in job_postings]
 
 
@@ -192,6 +213,7 @@ def get_job(job_id: int, db: Session = Depends(get_db)):
     """Fetch a single job posting's public detail (title, description, FAQ)."""
     job_posting = (
         db.query(JobPosting)
+        .options(joinedload(JobPosting.business))
         .filter(JobPosting.id == job_id, JobPosting.is_active.is_(True))
         .first()
     )

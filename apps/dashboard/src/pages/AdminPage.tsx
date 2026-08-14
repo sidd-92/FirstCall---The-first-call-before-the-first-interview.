@@ -19,12 +19,21 @@ import {
 // from seeing a page that would 403 on every request anyway.
 const PLATFORM_ADMIN_EMAIL = import.meta.env.VITE_PLATFORM_ADMIN_EMAIL as string | undefined
 
+const STATUS_LABELS: Record<AdminBusiness['status'], string> = {
+  unrequested: 'Unrequested',
+  pending_review: 'Pending review',
+  active: 'Active',
+  suspended: 'Suspended',
+}
+
 export function AdminPage() {
   const { user } = useAuth0()
   const { adminListBusinesses, adminApproveBusiness } = useAuthedApi()
   const [businesses, setBusinesses] = useState<AdminBusiness[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [approvingId, setApprovingId] = useState<number | null>(null)
+  const [allBusinesses, setAllBusinesses] = useState<AdminBusiness[] | null>(null)
+  const [allError, setAllError] = useState<string | null>(null)
 
   const isAdmin = Boolean(PLATFORM_ADMIN_EMAIL) && user?.email === PLATFORM_ADMIN_EMAIL
 
@@ -32,6 +41,9 @@ export function AdminPage() {
     adminListBusinesses('pending_review')
       .then(setBusinesses)
       .catch((err: Error) => setError(err.message))
+    adminListBusinesses()
+      .then(setAllBusinesses)
+      .catch((err: Error) => setAllError(err.message))
   }
 
   useEffect(() => {
@@ -96,6 +108,44 @@ export function AdminPage() {
                         {approvingId === business.id ? 'Approving...' : 'Approve'}
                       </Button>
                     </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
+
+      <h2 className="mt-10 mb-6 text-2xl font-semibold tracking-tight">All businesses</h2>
+
+      {allError && <p className="mb-4 text-destructive">{allError}</p>}
+      {!allError && allBusinesses === null && <p className="text-muted-foreground">Loading...</p>}
+      {allBusinesses?.length === 0 && <p className="text-muted-foreground">No businesses yet.</p>}
+
+      {allBusinesses && allBusinesses.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Businesses ({allBusinesses.length})</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Owner</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Jobs posted</TableHead>
+                  <TableHead>Created</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {allBusinesses.map((business) => (
+                  <TableRow key={business.id}>
+                    <TableCell className="font-medium">{business.name}</TableCell>
+                    <TableCell>{business.owner_email ?? business.requested_by_email ?? '—'}</TableCell>
+                    <TableCell>{STATUS_LABELS[business.status]}</TableCell>
+                    <TableCell>{business.job_posting_count}</TableCell>
+                    <TableCell>{new Date(business.created_at).toLocaleDateString()}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>

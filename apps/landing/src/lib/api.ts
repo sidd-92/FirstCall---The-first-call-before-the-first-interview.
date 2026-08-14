@@ -4,7 +4,14 @@ export interface JobPosting {
   id: number
   title: string
   description: string
+  location: string
+  employment_type: string
+  pay_min: number | null
+  pay_max: number | null
+  pay_currency: string
+  benefits: string[]
   faq_json: string
+  business_name: string
 }
 
 export interface ApplicationPayload {

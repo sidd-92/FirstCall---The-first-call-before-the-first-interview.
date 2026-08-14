@@ -212,12 +212,19 @@ export function CandidateDetailPage() {
         </Button>
 
         {candidate.stage === 'applied' && (
-          <Button
-            disabled={pendingAction === 'assign'}
-            onClick={() => runAction('assign', () => assignScreening(id!))}
-          >
-            {pendingAction === 'assign' ? 'Assigning...' : 'Assign Screening'}
-          </Button>
+          <div className="flex flex-col gap-1">
+            <Button
+              disabled={pendingAction === 'assign' || !candidate.screening_questions_available}
+              onClick={() => runAction('assign', () => assignScreening(id!))}
+            >
+              {pendingAction === 'assign' ? 'Assigning...' : 'Assign Screening'}
+            </Button>
+            {!candidate.screening_questions_available && (
+              <p className="text-xs text-muted-foreground">
+                Add screening questions to this job posting before screening candidates.
+              </p>
+            )}
+          </div>
         )}
 
         {candidate.stage === 'screening_completed' && (

@@ -26,13 +26,21 @@ export function JobListPage() {
         {jobs?.map((job) => (
           <Card key={job.id}>
             <CardHeader>
-              <CardTitle>{job.title}</CardTitle>
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-sm font-medium text-accent">{job.business_name}</p>
+                  <CardTitle>{job.title}</CardTitle>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    {[job.location, job.employment_type].filter(Boolean).join(' · ')}
+                  </p>
+                </div>
+                <Button asChild>
+                  <Link to={`/jobs/${job.id}`}>View</Link>
+                </Button>
+              </div>
             </CardHeader>
-            <CardContent className="flex items-center justify-between gap-4">
-              <p className="text-muted-foreground line-clamp-2">{job.description}</p>
-              <Button asChild>
-                <Link to={`/jobs/${job.id}`}>View</Link>
-              </Button>
+            <CardContent>
+              <p className="text-muted-foreground">{job.description}</p>
             </CardContent>
           </Card>
         ))}

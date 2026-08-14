@@ -440,6 +440,9 @@ def get_candidate(
     db.commit()
 
     pipeline_stage = _pipeline_stage_for(candidate)
+    screening_questions_available = bool(
+        _parse_agent_config(candidate.job_posting.faq_json)["screening_questions"]
+    )
 
     return {
         "id": candidate.id,
@@ -449,6 +452,7 @@ def get_candidate(
         "address": candidate.address,
         "resume_file_path": candidate.resume_file_path,
         "job_posting_title": candidate.job_posting.title,
+        "screening_questions_available": screening_questions_available,
         "stage": _stage_for(candidate),
         "messages": [_serialize_message(message) for message in _candidate_messages(db, candidate.id)],
         "screening_transcript": _screening_transcript(db, candidate.id),
@@ -482,9 +486,22 @@ def assign_screening(
     context: tuple[int, str] = Depends(get_current_actor_and_business),
     db: Session = Depends(get_db),
 ):
-    """Move a candidate into the screening_assigned pipeline stage."""
+    """Move a candidate into the screening_assigned pipeline stage.
+
+    Refuses if the candidate's job posting has no screening questions
+    configured -- without this, mcp-server's `next_screening_turn` finds an
+    empty question list and silently auto-completes screening on the
+    candidate's first DM (see screening.py), which looks like a bug rather
+    than "nothing to ask"."""
     business_id, actor = context
     candidate = _get_candidate_or_404(db, candidate_id, business_id)
+    job_posting = _get_job_posting_or_404(db, candidate.job_posting_id, business_id)
+    config = _parse_agent_config(job_posting.faq_json)
+    if not config["screening_questions"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This job posting has no screening questions configured yet.",
+        )
 
     _set_pipeline_stage(db, candidate_id, PipelineStageName.screening_assigned)
     _write_audit(db, business_id, actor, "assign_screening", candidate.id)

@@ -29,6 +29,7 @@ export interface CandidateDetail {
   address: string
   resume_file_path: string
   job_posting_title: string
+  screening_questions_available: boolean
   stage: PipelineStage
   messages: Message[]
   screening_transcript: string | null
@@ -85,8 +86,10 @@ export interface AdminBusiness {
   name: string
   auth0_sub: string
   requested_by_email: string | null
+  owner_email: string | null
   status: BusinessAccessStatus
   created_at: string
+  job_posting_count: number
 }
 
 export type McpServerState = 'starting' | 'running' | 'error' | 'disconnected'

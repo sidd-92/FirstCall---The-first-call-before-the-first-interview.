@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useParams, Link } from 'react-router'
 import { applyToJob, getJob, type JobPosting } from '@/lib/api'
-import { buildApplicationMailto } from '@/lib/mailto'
+import { buildApplicationSubject, getApplicationEmailAddress } from '@/lib/mailto'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -17,6 +17,7 @@ export function JobDetailPage() {
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [subjectCopied, setSubjectCopied] = useState(false)
   const [discordCodeCopied, setDiscordCodeCopied] = useState(false)
   const discordInviteUrl = import.meta.env.VITE_DISCORD_INVITE_URL as string | undefined
 
@@ -59,10 +60,16 @@ export function JobDetailPage() {
   }
 
   async function handleCopyEmail() {
-    if (!job || !id) return
-    await navigator.clipboard.writeText(buildApplicationMailto(job.title, id))
+    await navigator.clipboard.writeText(getApplicationEmailAddress())
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
+  }
+
+  async function handleCopySubject() {
+    if (!job || !id) return
+    await navigator.clipboard.writeText(buildApplicationSubject(job.title, id))
+    setSubjectCopied(true)
+    setTimeout(() => setSubjectCopied(false), 2000)
   }
 
   async function handleCopyDiscordCode() {
@@ -103,14 +110,36 @@ export function JobDetailPage() {
     )
   }
 
+  const payRange =
+    job.pay_min != null && job.pay_max != null
+      ? job.pay_currency === 'INR'
+        ? `₹${job.pay_min / 100_000}–${job.pay_max / 100_000} LPA`
+        : `${job.pay_currency} ${job.pay_min.toLocaleString()}–${job.pay_max.toLocaleString()}`
+      : null
+
   return (
     <main className="mx-auto max-w-2xl px-4 py-12">
-      <Link to="/" className="text-sm text-muted-foreground hover:text-foreground">
+      <Link to="/" className="text-sm text-accent hover:underline">
         &larr; Back to all jobs
       </Link>
 
-      <h1 className="mt-4 mb-2 text-3xl font-semibold tracking-tight">{job.title}</h1>
-      <p className="mb-8 whitespace-pre-wrap text-muted-foreground">{job.description}</p>
+      <p className="mt-4 text-sm font-medium text-accent">{job.business_name}</p>
+      <h1 className="mb-2 text-3xl font-semibold tracking-tight">{job.title}</h1>
+      <p className="mb-4 text-sm text-muted-foreground">
+        {[job.location, job.employment_type, payRange].filter(Boolean).join(' · ')}
+      </p>
+      <p className="mb-6 whitespace-pre-wrap text-muted-foreground">{job.description}</p>
+
+      {job.benefits.length > 0 && (
+        <div className="mb-8">
+          <h2 className="mb-2 font-heading text-lg font-medium">Benefits</h2>
+          <ul className="list-disc pl-5 text-muted-foreground">
+            {job.benefits.map((benefit) => (
+              <li key={benefit}>{benefit}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {submitted ? (
         <Card>
@@ -118,21 +147,42 @@ export function JobDetailPage() {
             <CardTitle>Application submitted</CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
-            <p className="text-muted-foreground">
-              Thanks for applying. You can also reach out directly by email.
-            </p>
-            <Button variant="outline" onClick={handleCopyEmail} type="button" className="w-fit">
-              {copied ? 'Copied!' : 'Copy application email'}
-            </Button>
+            <div className="flex flex-col gap-3 rounded-md border p-4">
+              <p className="text-sm font-medium">Reach out directly by email (optional)</p>
+              <div className="flex flex-wrap items-center gap-3">
+                <code className="w-fit rounded bg-muted px-3 py-1.5 font-mono text-sm">
+                  {getApplicationEmailAddress()}
+                </code>
+                <Button variant="outline" size="sm" onClick={handleCopyEmail} type="button">
+                  {copied ? 'Copied!' : 'Copy address'}
+                </Button>
+              </div>
+              <div className="flex flex-wrap items-center gap-3">
+                <code className="w-fit rounded bg-muted px-3 py-1.5 font-mono text-sm">
+                  {job && id ? buildApplicationSubject(job.title, id) : ''}
+                </code>
+                <Button variant="outline" size="sm" onClick={handleCopySubject} type="button">
+                  {subjectCopied ? 'Copied!' : 'Copy subject'}
+                </Button>
+              </div>
+              <ol className="flex list-decimal flex-col gap-1.5 pl-5 text-sm text-muted-foreground">
+                <li>
+                  Click <span className="font-medium text-foreground">Copy address</span> above, then start a new
+                  email in your own email app and paste it into the To field.
+                </li>
+                <li>
+                  Click <span className="font-medium text-foreground">Copy subject</span> above, then paste it into
+                  the Subject field -- this keeps your job reference (
+                  <span className="font-mono">[JOB-{id}]</span>) attached to the thread so replies get matched to
+                  your application automatically.
+                </li>
+                <li>Add your message and send.</li>
+              </ol>
+            </div>
 
             {discordLinkCode && (
               <div className="flex flex-col gap-3 rounded-md border p-4">
                 <p className="text-sm font-medium">Get updates over Discord (optional)</p>
-                <p className="text-sm text-muted-foreground">
-                  {discordInviteUrl
-                    ? 'Join our Discord server and DM the bot the code below to connect your application.'
-                    : 'DM our Discord bot the code below to connect your application.'}
-                </p>
                 <div className="flex flex-wrap items-center gap-3">
                   <code className="w-fit rounded bg-muted px-3 py-1.5 font-mono text-lg tracking-widest">
                     {discordLinkCode}
@@ -146,6 +196,31 @@ export function JobDetailPage() {
                     {discordCodeCopied ? 'Copied!' : 'Copy code'}
                   </Button>
                 </div>
+
+                <ol className="flex list-decimal flex-col gap-1.5 pl-5 text-sm text-muted-foreground">
+                  {discordInviteUrl && (
+                    <li>
+                      Click <span className="font-medium text-foreground">Join Discord Server</span> below and accept
+                      the invite.
+                    </li>
+                  )}
+                  <li>
+                    In Discord, open{' '}
+                    <span className="font-medium text-foreground">Direct Messages</span> and start (or open) a chat
+                    with the{' '}
+                    <span className="font-medium text-foreground">FirstCallApplication</span> bot -- not the server's
+                    text channels.
+                  </li>
+                  <li>
+                    Paste the code above into that DM and send it as a normal message (nothing else needs to be in
+                    the message).
+                  </li>
+                  <li>
+                    The bot replies right away to confirm it's linked. From then on, application updates arrive in
+                    that same DM thread.
+                  </li>
+                </ol>
+
                 {discordInviteUrl && (
                   <Button onClick={handleJoinDiscord} type="button" className="w-fit">
                     {discordCodeCopied ? 'Code copied -- opening Discord...' : 'Join Discord Server'}

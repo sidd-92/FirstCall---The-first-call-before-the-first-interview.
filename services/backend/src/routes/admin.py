@@ -8,7 +8,7 @@ is all this hackathon showcase needs.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from src.auth import require_admin
 from src.db import get_db
@@ -26,8 +26,10 @@ def _serialize_business_for_admin(business: Business) -> dict:
         "name": business.name,
         "auth0_sub": business.auth0_sub,
         "requested_by_email": business.requested_by_email,
+        "owner_email": business.owner_email,
         "status": business.status.value,
         "created_at": business.created_at.isoformat() if business.created_at else None,
+        "job_posting_count": len(business.job_postings),
     }
 
 
@@ -39,7 +41,7 @@ def list_businesses_for_admin(
 ):
     """List businesses for admin review, e.g. `?status=pending_review`.
     Omit `status` to list every business regardless of state."""
-    query = db.query(Business)
+    query = db.query(Business).options(joinedload(Business.job_postings))
     if status_filter is not None:
         try:
             parsed_status = BusinessStatus(status_filter)
