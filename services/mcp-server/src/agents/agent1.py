@@ -169,7 +169,7 @@ def _handle_email(message: Message) -> None:
         )
         return
 
-    sender_email = (message.sender or {}).get("email")
+    sender_email = (message.sender or {}).get("address")
     candidate = (
         db.find_candidate_by_email(sender_email, job_posting_id)
         if sender_email

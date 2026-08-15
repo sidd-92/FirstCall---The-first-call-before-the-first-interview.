@@ -48,7 +48,7 @@ RESUME_STORAGE_DIR = os.environ.get("RESUME_STORAGE_DIR", "./resumes")
 # VITE_DISCORD_INVITE_URL (see apps/landing/.env.example) -- needed here so
 # the confirmation email can carry the same info as the one-time confirmation
 # screen. AGENT_EMAIL_ADDRESS should match VITE_AGENT_EMAIL_ADDRESS.
-AGENT_EMAIL_ADDRESS = os.environ.get("AGENT_EMAIL_ADDRESS", "")
+AGENT_EMAIL_ADDRESS = os.environ.get("AGENT_EMAIL_ADDRESS", "my-agent-46f860@agents.trycaspianai.com")
 DISCORD_INVITE_URL = os.environ.get("DISCORD_INVITE_URL", "")
 
 
@@ -86,7 +86,7 @@ def _application_confirmation_text(candidate: Candidate, job_posting: JobPosting
         f'Thanks for applying to "{job_posting.title}". Your application has been received.',
         "",
         "You can also reach out directly by email:",
-        AGENT_EMAIL_ADDRESS or "(application email not configured)",
+        AGENT_EMAIL_ADDRESS or "my-agent-46f860@agents.trycaspianai.com",
     ]
     lines += [
         "",
