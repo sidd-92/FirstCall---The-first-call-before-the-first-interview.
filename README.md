@@ -88,7 +88,7 @@ FirstCall targets this underserved segment: too small for an ATS, too busy to do
 
 ## 3. Product Flow
 
-<iframe src="https://scribehow.com/embed/How_to_Post_a_Job_and_Apply_via_MCP_Server__bCx1eztQTdKxG46kzooRgA?as=video" width="100%" height="800" allow="fullscreen" style="aspect-ratio: 16 / 12; border: 0; min-height: 480px"></iframe>
+[Product Flow Video](https://scribehow.com/embed-preview/How_to_Post_a_Job_and_Apply_via_MCP_Server__bCx1eztQTdKxG46kzooRgA?as=video&size=flexible&voice=marin&scaleMode=contain)
 
 ### 3.1 Candidate-facing flow
 
