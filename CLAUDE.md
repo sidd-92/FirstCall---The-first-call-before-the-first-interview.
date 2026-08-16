@@ -8,11 +8,11 @@ Follow **README.md §0 ("Setup & Getting Admin Access")** top to bottom for firs
 
 ## Things agents commonly get wrong in this repo
 
-- **Editing `.env` does not restart running containers.** Docker Compose reads `env_file` once, at container *creation*, not live. After changing any value in `.env`, the affected container must be rebuilt/recreated, not just left running:
+- **Editing `.env` does not restart running containers.** Docker Compose reads `env_file` once, at container *creation*, not live. After changing any value in root `.env`, always run:
   ```
-  docker compose up -d --build <service>
+  make restart-backend
   ```
-  `docker compose restart <service>` is *not* enough — it restarts the process inside the existing container without re-reading `.env`.
+  Never use `docker compose restart backend` — it restarts the process inside the existing container without re-reading `.env`, so the old value stays in effect. This has already caused real, repeated confusion in this project (looked exactly like an Auth0/permissions bug both times) — always use the make target, don't hand-roll `docker compose up -d --build backend` either, just to remove any chance of typo-ing it into a plain restart.
 
 - **`PLATFORM_ADMIN_EMAIL` requires an Auth0 tenant-side Action first.** Auth0 Access Tokens omit the `email` claim by default — only ID Tokens carry it. `services/backend/src/auth.py`'s `require_admin` reads `email` off the Access Token; without a Login Action that explicitly adds it (README §0.2), admin access silently 403s forever, no matter what `PLATFORM_ADMIN_EMAIL` is set to. Set this up *before* the first login.
 

@@ -41,11 +41,11 @@ Fix this once, in your Auth0 tenant, before first login:
 3. `make dev` — starts `mcp-server` + `backend` (Docker) and the dashboard/landing dev servers (Turborepo).
 4. Open the dashboard, sign up / log in with **the account you want to be admin** (any real email works — this is the account judges should use).
 5. On first login, a `Business` row is auto-provisioned for that Auth0 `sub` (see `auth.py`'s `_get_or_provision_business`) with `status = unrequested` — this is expected; it's not admin yet.
-6. Note the exact email you just signed up with, set it as `PLATFORM_ADMIN_EMAIL` in the root `.env`, then restart the backend so it picks up the new value. **Editing `.env` alone does nothing while the container keeps running** — Docker Compose reads `env_file` once, at container creation, not live, so the backend container must actually be recreated, not just left up:
+6. Note the exact email you just signed up with, set it as `PLATFORM_ADMIN_EMAIL` in the root `.env`, then restart the backend so it picks up the new value. **Editing `.env` alone does nothing while the container keeps running** — Docker Compose reads `env_file` once, at container creation, not live, so the backend container must actually be recreated, not just left up. Always use:
    ```
-   docker compose up -d --build backend
+   make restart-backend
    ```
-   (`docker compose restart backend` is *not* enough — that restarts the process inside the existing container without re-reading `.env`.)
+   (never `docker compose restart backend`, and don't hand-roll the `docker compose up -d --build backend` command either — this has already been gotten wrong twice by doing a plain restart instead of a rebuild+recreate; use the make target so it's not possible to get it wrong again.)
 7. Log out and back in (so the refreshed session re-issues a token) — this account now passes `require_admin` and can access `/admin/*` (approve/reject business access requests, etc.) in the dashboard.
 8. Also set `VITE_PLATFORM_ADMIN_EMAIL` in `apps/dashboard/.env.local` to the **same** email, then restart the dashboard's Vite dev server. This is a second, separate env var from the backend's `PLATFORM_ADMIN_EMAIL` — it only controls whether the dashboard *shows* the Admin nav link/page client-side (`AppLayout.tsx`); real enforcement is entirely server-side (`require_admin`), so a mismatch here doesn't block API access, it just hides the UI for an account that would otherwise be let in. Easy to miss since the API works fine and nothing errors — the symptom is just "I'm admin but I don't see the Admin link."
 
