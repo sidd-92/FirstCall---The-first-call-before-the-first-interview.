@@ -11,7 +11,7 @@ dependencies = [
     "cryptography",
     "python-dotenv",
     "sqlalchemy",
-    "anthropic",
+    "google-genai",
 ]
 
 [dependency-groups]

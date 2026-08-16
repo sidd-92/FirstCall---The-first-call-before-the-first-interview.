@@ -1,4 +1,4 @@
-"""Thin wrapper around the Anthropic API for the FAQ fallback answer.
+"""Thin wrapper around the Gemini API for the FAQ fallback answer.
 
 Kept as a single narrow function so tests can monkeypatch it instead of
 hitting the real API.
@@ -7,15 +7,16 @@ hitting the real API.
 import os
 from functools import lru_cache
 
-from anthropic import Anthropic
+from google import genai
+from google.genai import types
 
-MODEL = "claude-haiku-4-5-20251001"
-MAX_TOKENS = 300
+MODEL = "gemini-2.5-flash"
+MAX_OUTPUT_TOKENS = 300
 
 
 @lru_cache(maxsize=1)
-def _client() -> Anthropic:
-    return Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+def _client() -> genai.Client:
+    return genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
 
 def ask_faq_fallback(job_description: str, faq_text: str, question: str) -> str:
@@ -29,10 +30,13 @@ def ask_faq_fallback(job_description: str, faq_text: str, question: str) -> str:
         f"Role description:\n{job_description}\n\n"
         f"FAQ:\n{faq_text}"
     )
-    response = _client().messages.create(
+    response = _client().models.generate_content(
         model=MODEL,
-        max_tokens=MAX_TOKENS,
-        system=system_prompt,
-        messages=[{"role": "user", "content": question}],
+        contents=question,
+        config=types.GenerateContentConfig(
+            system_instruction=system_prompt,
+            max_output_tokens=MAX_OUTPUT_TOKENS,
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
+        ),
     )
-    return "".join(block.text for block in response.content if block.type == "text")
+    return response.text

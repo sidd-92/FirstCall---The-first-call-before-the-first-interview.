@@ -1,5 +1,5 @@
 """FAQ answering for inbound email: match against the job's fixed FAQ first,
-falling back to Claude Haiku only when nothing matches closely enough.
+falling back to Gemini only when nothing matches closely enough.
 
 The match is a simple keyword-overlap heuristic, not embeddings/NLP -- good
 enough to catch "what's the pay range?" hitting a "Salary range?" FAQ entry
@@ -9,8 +9,8 @@ this starts missing real matches.
 
 import re
 
-from src.agents.anthropic_client import ask_faq_fallback
 from src.agents.config import JobAgentConfig
+from src.agents.gemini_client import ask_faq_fallback
 
 _STOPWORDS = {
     "a", "an", "the", "is", "are", "was", "were", "what", "when", "where",
