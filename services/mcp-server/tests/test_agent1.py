@@ -139,7 +139,7 @@ def test_email_answers_from_fixed_faq_without_llm(db, monkeypatch):
     message = make_message(
         channel="email",
         subject="Question [JOB-1]",
-        sender={"email": "jamie@example.com"},
+        sender={"address": "jamie@example.com"},
         text="What is the salary range?",
     )
     agent1.handle_message(message)
@@ -159,7 +159,7 @@ def test_email_falls_back_to_llm_for_uncovered_question(db, monkeypatch):
     message = make_message(
         channel="email",
         subject="Question [JOB-1]",
-        sender={"email": "jamie@example.com"},
+        sender={"address": "jamie@example.com"},
         text="Can I start next month?",
     )
     agent1.handle_message(message)
@@ -185,7 +185,7 @@ def test_email_reply_embeds_job_tag_in_body_not_subject(db, monkeypatch):
     message = make_message(
         channel="email",
         subject=None,
-        sender={"email": "jamie@example.com"},
+        sender={"address": "jamie@example.com"},
         text="What is the salary range? [JOB-1]",
     )
     agent1.handle_message(message)
@@ -216,7 +216,7 @@ def test_email_reply_on_tracked_conversation_resolves_without_any_tag(db):
         channel="email",
         subject=None,
         conversation_id="conv-email-thread-1",
-        sender={"email": "jamie@example.com"},
+        sender={"address": "jamie@example.com"},
         text="What is the salary range?",
     )
     agent1.handle_message(message)
@@ -227,7 +227,7 @@ def test_email_reply_on_tracked_conversation_resolves_without_any_tag(db):
 
 def test_email_missing_job_tag_gets_generic_reply(db):
     message = make_message(
-        channel="email", subject="Hello there", sender={"email": "a@b.com"}
+        channel="email", subject="Hello there", sender={"address": "a@b.com"}
     )
     agent1.handle_message(message)
 
@@ -241,7 +241,7 @@ def test_email_unknown_candidate_gets_generic_reply(db):
     message = make_message(
         channel="email",
         subject="Question [JOB-1]",
-        sender={"email": "stranger@example.com"},
+        sender={"address": "stranger@example.com"},
         text="What is the salary?",
     )
     agent1.handle_message(message)

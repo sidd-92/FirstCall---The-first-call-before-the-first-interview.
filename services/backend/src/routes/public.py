@@ -98,11 +98,15 @@ def _application_confirmation_text(candidate: Candidate, job_posting: JobPosting
         lines.append(f"{step}. Join our Discord server: {DISCORD_INVITE_URL}")
         step += 1
     lines += [
-        f"{step}. In Discord, open Direct Messages and start a chat with the "
-        "FirstCallApplication bot (not the server's text channels).",
+        (
+            f"{step}. In Discord, open Direct Messages and start a chat with the "
+            "FirstCallApplication bot (not the server's text channels)."
+        ),
         f"{step + 1}. Paste your code above into that DM and send it.",
-        f"{step + 2}. The bot replies right away to confirm it's linked -- "
-        "application updates will arrive in that same DM thread.",
+        (
+            f"{step + 2}. The bot replies right away to confirm it's linked -- "
+            "application updates will arrive in that same DM thread."
+        ),
     ]
     lines += ["", f"[JOB-{job_posting.id}]"]
     return "\n".join(lines)

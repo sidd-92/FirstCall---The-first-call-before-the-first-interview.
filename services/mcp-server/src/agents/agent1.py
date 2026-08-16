@@ -119,11 +119,13 @@ def _reply_with_faq_answer(
 
     try:
         answer, used_llm_fallback = faq.answer_question(config, message.text)
-    except Exception:
+    except Exception:  # noqa: BLE001 -- best-effort by design, must still reply
         conv_log.warning("faq_answer_failed", exc_info=True)
         answer, used_llm_fallback = (
-            "Sorry, we're having trouble answering that automatically right now -- "
-            "we've noted your question and the hiring team will follow up directly.",
+            (
+                "Sorry, we're having trouble answering that automatically right now -- "
+                "we've noted your question and the hiring team will follow up directly."
+            ),
             True,
         )
     reply_text = with_job_tag(answer, job_posting_id)
