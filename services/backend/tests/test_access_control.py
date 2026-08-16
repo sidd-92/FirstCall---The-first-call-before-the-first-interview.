@@ -73,18 +73,19 @@ def business_set(db_session):
     db_session.add_all([business_a, business_b])
     db_session.flush()
 
+    screening_questions_json = '{"screening_questions": ["Tell us about yourself."]}'
     job_a = JobPosting(
         business_id=business_a.id,
         title="Role A",
         description="Build things.",
-        faq_json="{}",
+        faq_json=screening_questions_json,
         is_active=True,
     )
     job_b = JobPosting(
         business_id=business_b.id,
         title="Role B",
         description="Build other things.",
-        faq_json="{}",
+        faq_json=screening_questions_json,
         is_active=True,
     )
     db_session.add_all([job_a, job_b])
