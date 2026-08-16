@@ -7,6 +7,51 @@
 
 ---
 
+## 0. Setup & Getting Admin Access (Judges Start Here)
+
+This section exists so a fresh clone can be run and reviewed end-to-end, including the HR admin surface, without any prior context.
+
+### 0.1 Prerequisites
+- Docker + Docker Compose
+- Node.js 22+ and `pnpm`
+- An **Auth0 tenant** you control (a free dev tenant is enough — see §7.2.1). You'll need a Regular Web App / SPA registered in it, with its Domain, Client ID, and an API Audience.
+- API keys: `CASPIAN_API_KEY`, `DISCORD_BOT_TOKEN`, `ANTHROPIC_API_KEY` (or a Gemini key, if using the Gemini-backed FAQ fallback — see `services/mcp-server/src/agents/gemini_client.py`)
+
+### 0.2 Configure Auth0 to actually carry an email claim
+
+**This step is easy to miss and will silently break admin access if skipped.** Auth0 Access Tokens do **not** include profile claims like `email` by default — only ID Tokens do. `services/backend/src/auth.py`'s `require_admin` and `_require_verified_email` both read `claims.get("email")` off the *Access Token*. If that claim is missing, `require_admin` denies every request, no matter what `PLATFORM_ADMIN_EMAIL` is set to (see `auth.py:175-184` for the exact known-limitation note).
+
+Fix this once, in your Auth0 tenant, before first login:
+1. Auth0 Dashboard → **Actions** → **Flows** → **Login**
+2. Add a custom Action (or Rule, on older tenants) that adds the email claim to the Access Token, e.g.:
+   ```js
+   exports.onExecutePostLogin = async (event, api) => {
+     if (event.authorization) {
+       api.accessToken.setCustomClaim('email', event.user.email);
+     }
+   };
+   ```
+   (Namespaced claims like `https://firstcall.app/email` also work — just keep `auth.py` in sync with whatever claim name you use.)
+3. Deploy the Action and add it to the Login flow.
+
+### 0.3 First run and getting admin access
+
+1. `cp .env.example .env` (root) and fill in the keys from §0.1, leaving `PLATFORM_ADMIN_EMAIL` **blank** for now.
+2. `cp apps/dashboard/.env.example apps/dashboard/.env` and `cp apps/landing/.env.example apps/landing/.env`, filling in the `VITE_AUTH0_*` values from your tenant.
+3. `make dev` — starts `mcp-server` + `backend` (Docker) and the dashboard/landing dev servers (Turborepo).
+4. Open the dashboard, sign up / log in with **the account you want to be admin** (any real email works — this is the account judges should use).
+5. On first login, a `Business` row is auto-provisioned for that Auth0 `sub` (see `auth.py`'s `_get_or_provision_business`) with `status = unrequested` — this is expected; it's not admin yet.
+6. Note the exact email you just signed up with, set it as `PLATFORM_ADMIN_EMAIL` in the root `.env`, then restart the backend so it picks up the new value. **Editing `.env` alone does nothing while the container keeps running** — Docker Compose reads `env_file` once, at container creation, not live, so the backend container must actually be recreated, not just left up:
+   ```
+   docker compose up -d --build backend
+   ```
+   (`docker compose restart backend` is *not* enough — that restarts the process inside the existing container without re-reading `.env`.)
+7. Log out and back in (so the refreshed session re-issues a token) — this account now passes `require_admin` and can access `/admin/*` (approve/reject business access requests, etc.) in the dashboard.
+
+Only one admin email is supported at a time (`PLATFORM_ADMIN_EMAIL` is a single exact-match string, not a list — see `.env.example`'s note) — this is intentional for a hackathon-scale showcase, not a bug.
+
+---
+
 ## 1. Overview
 
 FirstCall is an AI-assisted hiring assistant for small businesses that don't have a dedicated recruiter or ATS. It handles the earliest, most repetitive part of hiring — answering candidate FAQs and running a non-technical first-round screening conversation — across two communication channels (Email and Discord) through a single AI agent identity, powered by the [Caspian SDK](https://github.com/TryCaspian/caspian-sdk).
@@ -192,6 +237,23 @@ Structured, extensive logging is implemented across all Python services, distinc
 - **Access-control tests** — explicit tests that attempt to read another business's candidate/conversation data and assert failure
 - **Real, not mocked, integration test** — a genuine Email + Discord round-trip through the live handler, in line with the hackathon's requirement that demo videos show real, unmocked functionality
 - **Cost-control tests** — verifying LLM calls only occur where intended (FAQ answering, on-demand AI review) and never per-message or automatically per-candidate
+
+### 9.1 Continuous Integration
+
+`.github/workflows/ci.yml` runs on every push/PR to `master` as three independent jobs:
+
+| Job | Scope | Steps |
+|---|---|---|
+| `js` | `apps/dashboard`, `apps/landing` | `pnpm install --frozen-lockfile`, then `pnpm turbo run lint build test` |
+| `mcp-server` | `services/mcp-server` | `uv sync`, `uv run ruff check .`, `uv run pytest` |
+| `backend` | `services/backend` | `uv sync`, `uv run ruff check .`, `uv run pytest` |
+
+All three must pass before a PR is considered mergeable. Locally, run the same checks any job runs before pushing:
+```
+pnpm turbo run lint build test --filter=dashboard --filter=landing
+cd services/mcp-server && uv run ruff check . && uv run pytest
+cd services/backend && uv run ruff check . && uv run pytest
+```
 
 ---
 
