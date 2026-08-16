@@ -47,8 +47,9 @@ Fix this once, in your Auth0 tenant, before first login:
    ```
    (`docker compose restart backend` is *not* enough — that restarts the process inside the existing container without re-reading `.env`.)
 7. Log out and back in (so the refreshed session re-issues a token) — this account now passes `require_admin` and can access `/admin/*` (approve/reject business access requests, etc.) in the dashboard.
+8. Also set `VITE_PLATFORM_ADMIN_EMAIL` in `apps/dashboard/.env.local` to the **same** email, then restart the dashboard's Vite dev server. This is a second, separate env var from the backend's `PLATFORM_ADMIN_EMAIL` — it only controls whether the dashboard *shows* the Admin nav link/page client-side (`AppLayout.tsx`); real enforcement is entirely server-side (`require_admin`), so a mismatch here doesn't block API access, it just hides the UI for an account that would otherwise be let in. Easy to miss since the API works fine and nothing errors — the symptom is just "I'm admin but I don't see the Admin link."
 
-Only one admin email is supported at a time (`PLATFORM_ADMIN_EMAIL` is a single exact-match string, not a list — see `.env.example`'s note) — this is intentional for a hackathon-scale showcase, not a bug.
+Only one admin email is supported at a time (`PLATFORM_ADMIN_EMAIL` is a single exact-match string, not a list — see `.env.example`'s note) — this is intentional for a hackathon-scale showcase, not a bug. **Both `PLATFORM_ADMIN_EMAIL` (backend) and `VITE_PLATFORM_ADMIN_EMAIL` (dashboard) must be kept in sync manually** — there is no shared source of truth between them, and nothing warns you when they drift.
 
 ---
 

@@ -18,4 +18,6 @@ Follow **README.md §0 ("Setup & Getting Admin Access")** top to bottom for firs
 
 - **Order matters for admin access:** sign up first with the intended admin account (auto-provisions a `Business` row, not yet admin), *then* set `PLATFORM_ADMIN_EMAIL` to that exact email, rebuild the backend container, then log out and back in to get a fresh token. Setting `PLATFORM_ADMIN_EMAIL` before anyone has signed up with that email does nothing yet — see README §0.3.
 
-- Only **one** admin email is supported at a time (`PLATFORM_ADMIN_EMAIL` is a single exact-match string, not a list) — this is intentional for a hackathon-scale showcase, not a bug to fix.
+- **There are TWO admin-email env vars, not one, and they don't share a source of truth.** `PLATFORM_ADMIN_EMAIL` (backend, root `.env`) is what actually gates `/admin/*` API access. `VITE_PLATFORM_ADMIN_EMAIL` (`apps/dashboard/.env.local`) is a completely separate, frontend-only, build-time var that only controls whether the dashboard *shows* the Admin nav link/page (`AppLayout.tsx`). If they drift out of sync, the API still works correctly but the UI silently hides the admin link — no error, no 403, just a confusing "I'm admin but I don't see it." Set both to the same email, and remember `VITE_*` vars need a Vite dev-server restart to take effect (not just a file save).
+
+- Only **one** admin email is supported at a time per var (`PLATFORM_ADMIN_EMAIL` is a single exact-match string, not a list) — this is intentional for a hackathon-scale showcase, not a bug to fix.
