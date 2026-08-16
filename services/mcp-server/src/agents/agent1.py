@@ -117,7 +117,15 @@ def _reply_with_faq_answer(
 
     storage.save_message(conversation_id, "inbound", message.text or "")
 
-    answer, used_llm_fallback = faq.answer_question(config, message.text)
+    try:
+        answer, used_llm_fallback = faq.answer_question(config, message.text)
+    except Exception:
+        conv_log.warning("faq_answer_failed", exc_info=True)
+        answer, used_llm_fallback = (
+            "Sorry, we're having trouble answering that automatically right now -- "
+            "we've noted your question and the hiring team will follow up directly.",
+            True,
+        )
     reply_text = with_job_tag(answer, job_posting_id)
     message.reply(text=reply_text)
     storage.save_message(conversation_id, "outbound", reply_text, kind="faq_answer")
